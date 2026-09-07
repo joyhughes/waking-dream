@@ -17,6 +17,27 @@ export interface ModelListing {
   kind?: string;
   /** Slider labels, so the list can say what a model offers before it is downloaded. */
   controls?: string[];
+  /** Base channel width. Together with `blocks`, this is what actually sets the frame cost. */
+  width?: number;
+  blocks?: number;
+  params?: number;
+}
+
+/**
+ * A rough cost class, for labelling the model list.
+ *
+ * Frame time scales with the width squared and linearly with the depth, because the residual stack
+ * is where nearly all the arithmetic is. File size tracks that loosely but not reliably — a wide,
+ * shallow network and a narrow, deep one can weigh the same and cost very different amounts.
+ */
+export function costLabel(listing: ModelListing): string {
+  const width = listing.width ?? 0;
+  const blocks = listing.blocks ?? 0;
+  if (width === 0) return '';
+  const work = width * width * Math.max(1, blocks);
+  if (work <= 2000) return 'fast';
+  if (work <= 20000) return 'medium';
+  return 'heavy';
 }
 
 export const MODELS_BASE = 'models';

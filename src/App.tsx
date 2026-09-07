@@ -5,6 +5,7 @@ import {
   type BenchmarkRow,
   type EngineConfig,
   type EngineStatus,
+  type ModelBenchmarkRow,
   type ProcessorMode,
 } from './pipeline/engine';
 import { CanvasRecorder, download, extensionForMimeType, saveCanvasFrame, timestampedName } from './pipeline/recorder';
@@ -12,9 +13,10 @@ import { buildParameters, couldCarryParameters, describeParameters, readParamete
 import { CameraSource, ImageSource, VideoFileSource, type FrameSource } from './pipeline/sources';
 import { createTestPattern } from './pipeline/testPattern';
 import type { ControlSpec } from './model/format';
-import { fetchModelListings, formatSize, modelUrl, type ModelListing } from './model/registry';
+import { costLabel, fetchModelListings, formatSize, modelUrl, type ModelListing } from './model/registry';
 import { deleteSavedModel, listSavedModels, loadSavedModel, type SavedModelMeta } from './model/storage';
 import { TrainPanel } from './ui/TrainPanel';
+import { getDeviceLimits } from './pipeline/deviceLimits';
 import type { FeatureBank } from './model/shallowDream';
 import { BenchmarkPanel } from './ui/BenchmarkPanel';
 import { VideoTransport } from './ui/VideoTransport';
@@ -79,9 +81,15 @@ export default function App() {
 
     void fetchModelListings().then((found) => {
       setListings(found);
-      // A deployed build should open with a trained model already running, not with the fallback
-      // and a menu. Nothing downloads if none were shipped.
-      if (found.length > 0) void loadListing(found[0]);
+      // A deployed build should open with a trained model already running, not the fallback and a
+      // menu. On a phone that means the cheapest one: a 300 kB download rather than 4 MB, possibly
+      // over cellular, and a network whose residual stack is a fraction of the arithmetic. Neither
+      // is worth trading for a better-looking model nobody has asked for yet.
+      if (found.length === 0) return;
+      const pick = getDeviceLimits().preferCheapestModel
+        ? [...found].sort((a, b) => (a.params ?? a.bytes) - (b.params ?? b.bytes))[0]
+        : found[0];
+      void loadListing(pick);
     });
 
     return () => {
@@ -242,6 +250,45 @@ export default function App() {
     [listings, saved, loadListing, loadSaved],
   );
 
+  /**
+   * Measures every shipped model at the current capture size, on this machine.
+   *
+   * File size is a poor proxy for frame cost — a wide shallow network and a narrow deep one can
+   * weigh the same and cost very different amounts — and the only number that settles it is the one
+   * measured on the GPU that will actually run it.
+   */
+  const compareModels = useCallback(async (): Promise<ModelBenchmarkRow[]> => {
+    const engine = engineRef.current;
+    if (!engine) throw new Error('The engine is not running.');
+
+    const wasRunning = engine.status().running;
+    const restore = selectedModel;
+    const rows: ModelBenchmarkRow[] = [];
+
+    engine.stop();
+    try {
+      for (const listing of listings) {
+        await engine.loadModel(modelUrl(listing.file));
+        engine.setConfig({ processor: 'model' });
+        engine.discardFeedback();
+        const ms = engine.measure();
+        rows.push({
+          label: listing.name,
+          detail: listing.width ? `${listing.width}×${listing.blocks} · ${formatSize(listing.bytes)}` : formatSize(listing.bytes),
+          msPerFrame: ms,
+          fps: ms > 0 ? 1000 / ms : 0,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+    } finally {
+      const original = listings.find((entry) => entry.file === restore);
+      if (original) await loadListing(original);
+      if (wasRunning) engine.start();
+    }
+
+    return rows;
+  }, [listings, selectedModel, loadListing]);
+
   const runBenchmark = useCallback(async (sizes: number[]): Promise<BenchmarkRow[]> => {
     const engine = engineRef.current;
     if (!engine) throw new Error('The engine is not running.');
@@ -400,7 +447,9 @@ export default function App() {
                   : []),
                 ...listings.map((listing) => ({
                   value: listing.file,
-                  label: `${listing.name} · ${formatSize(listing.bytes)}`,
+                  label:
+                    `${listing.name} · ${formatSize(listing.bytes)}` +
+                    (costLabel(listing) ? ` · ${costLabel(listing)}` : ''),
                 })),
                 ...saved.map((meta) => ({
                   value: meta.id,
@@ -436,6 +485,12 @@ export default function App() {
           </ButtonRow>
           {modelInfo ? (
             <p className="note">
+              {(() => {
+                const listing = listings.find((entry) => entry.file === selectedModel);
+                return listing?.width
+                  ? `${listing.width} channels × ${listing.blocks} blocks · ${costLabel(listing)} · `
+                  : '';
+              })()}
               {modelInfo}
               {listings.find((entry) => entry.file === selectedModel)?.description
                 ? ` — ${listings.find((entry) => entry.file === selectedModel)!.description}`
@@ -452,7 +507,7 @@ export default function App() {
 
         <Section title="Capture size" hint={`${config.captureSize}px`}>
           <ButtonRow>
-            {SIZE_PRESETS.map((size) => (
+            {SIZE_PRESETS.filter((size) => size <= getDeviceLimits().maxCaptureSize).map((size) => (
               <button
                 key={size}
                 className={`button small ${config.captureSize === size ? 'active' : ''}`}
@@ -466,13 +521,13 @@ export default function App() {
             label="Longest side"
             value={config.captureSize}
             min={64}
-            max={1024}
+            max={getDeviceLimits().maxCaptureSize}
             step={8}
             onChange={(captureSize) => patchConfig({ captureSize })}
             format={(value) => `${value} px`}
             title="The resolution the network actually sees. Cost grows with its square."
           />
-          <BenchmarkPanel onRun={runBenchmark} />
+          <BenchmarkPanel onRun={runBenchmark} onCompareModels={listings.length > 1 ? compareModels : undefined} />
         </Section>
 
         {config.processor === 'shallow' ? (

@@ -33,6 +33,15 @@ for (const file of entries) {
   try {
     const buffer = await readFile(join(MODELS_DIR, file));
     const header = readHeader(buffer, file);
+    const convs = (header.ops ?? []).filter((op) => op.type === 'conv');
+
+    // Bytes on disk track cost loosely, but what actually sets the frame time is how wide the
+    // residual stack is and how many blocks deep it goes — so the manifest carries both, and the
+    // model list can show the tradeoff before anything is downloaded.
+    const width = convs[0]?.outChannels ?? 0;
+    const blocks = Math.max(0, ((header.normSlots?.length ?? 5) - 5) / 2);
+    const params = (header.gpuTexels ?? 0) * 4 + (header.cpuFloats ?? 0);
+
     models.push({
       file,
       name: header.name ?? file.replace(/\.dnw$/, ''),
@@ -41,6 +50,9 @@ for (const file of entries) {
       trainedAt: header.trainedAt ?? null,
       kind: header.teacher?.kind ?? 'unknown',
       controls: (header.conditioning?.controls ?? []).map((control) => control.label),
+      width,
+      blocks,
+      params,
     });
   } catch (error) {
     // One unreadable file should not cost you the manifest for all the others.
@@ -53,6 +65,9 @@ await writeFile(join(MODELS_DIR, 'index.json'), `${JSON.stringify({ models }, nu
 
 console.log(`Indexed ${models.length} model${models.length === 1 ? '' : 's'} in public/models/`);
 for (const model of models) {
-  console.log(`  ${model.name.padEnd(24)} ${(model.bytes / 1024).toFixed(0).padStart(6)} kB  ${model.controls.join(', ')}`);
+  console.log(
+    `  ${model.name.padEnd(24)} ${(model.bytes / 1024).toFixed(0).padStart(6)} kB  ` +
+      `width ${String(model.width).padStart(3)} × ${model.blocks} blocks  ${model.controls.join(', ')}`,
+  );
 }
 for (const problem of problems) console.warn(`  skipped ${problem}`);

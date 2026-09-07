@@ -10,7 +10,10 @@
       "controls": [
         "Style: pandas",
         "Style: dot-painting"
-      ]
+      ],
+      "width": 24,
+      "blocks": 6,
+      "params": 1163332
     },
     {
       "file": "pandas.dnw",
@@ -21,7 +24,10 @@
       "kind": "style",
       "controls": [
         "Style: pandas"
-      ]
+      ],
+      "width": 8,
+      "blocks": 3,
+      "params": 77188
     },
     {
       "file": "pandas-big.dnw",
@@ -32,7 +38,10 @@
       "kind": "style",
       "controls": [
         "Style: pandas"
-      ]
+      ],
+      "width": 24,
+      "blocks": 6,
+      "params": 1141028
     }
   ]
 }

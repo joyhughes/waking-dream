@@ -1,4 +1,5 @@
 import { groupsFor, type GlContext } from './gl';
+import { getDeviceLimits } from '../pipeline/deviceLimits';
 
 /**
  * A feature map living entirely in GPU memory.
@@ -97,11 +98,16 @@ export interface TensorShape {
 const MAX_IDLE_FRAMES = 90;
 
 /**
- * Ceiling on pooled texture memory. Well under what a desktop tab is allowed, because the pool is
- * not the only thing holding GPU memory — the model's weights, the feedback buffer, and the
- * browser's own copy of every video frame all sit outside it.
+ * Ceiling on pooled texture memory, taken from the device rather than fixed.
+ *
+ * The pool is not the only thing holding GPU memory — the model's weights, the feedback buffer, and
+ * the browser's own copy of every video frame all sit outside it — so the budget is well under what
+ * a tab is allowed. On a phone that allowance is both much smaller and enforced by the process
+ * being killed rather than by an error, which is why `deviceLimits` sets it much lower there.
  */
-const DEFAULT_POOL_BUDGET_BYTES = 384 * 1024 * 1024;
+function defaultBudget(): number {
+  return getDeviceLimits().poolBudgetBytes;
+}
 
 interface Bucket {
   tensors: GpuTensor[];
@@ -116,7 +122,7 @@ export class TensorPool {
 
   constructor(
     private readonly ctx: GlContext,
-    private readonly budgetBytes: number = DEFAULT_POOL_BUDGET_BYTES,
+    private readonly budgetBytes: number = defaultBudget(),
   ) {}
 
   private static key(shape: TensorShape): string {

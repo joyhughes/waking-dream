@@ -4,6 +4,7 @@ import { GpuTensor } from '../gpu/tensor';
 import { DreamNet } from '../model/dreamnet';
 import { DEFAULT_SHALLOW_PARAMS, ShallowDream, type ShallowDreamParams } from '../model/shallowDream';
 import type { FrameSource } from './sources';
+import { getDeviceLimits } from './deviceLimits';
 import { FrameTimer, type TimingSnapshot } from './stats';
 
 export type ProcessorMode = 'off' | 'shallow' | 'model';
@@ -67,7 +68,7 @@ export interface EngineConfig {
 export const DEFAULT_CONFIG: EngineConfig = {
   processor: 'shallow',
   colorPreservation: 0,
-  captureSize: 256,
+  captureSize: getDeviceLimits().defaultCaptureSize,
   shallow: DEFAULT_SHALLOW_PARAMS,
   modelControls: [],
   feedback: {
@@ -83,6 +84,14 @@ export const DEFAULT_CONFIG: EngineConfig = {
   display: { mix: 1, gain: 1, saturation: 1 },
   mirror: null,
 };
+
+/** One model's measured cost, for the side-by-side comparison. */
+export interface ModelBenchmarkRow {
+  label: string;
+  detail: string;
+  msPerFrame: number;
+  fps: number;
+}
 
 export interface BenchmarkRow {
   captureSize: number;
@@ -383,7 +392,9 @@ export class Engine {
    * later composite is very slightly stretched; eight leaves room for a third downsample.
    */
   private captureDimensions(source: FrameSource): { width: number; height: number } {
-    const longest = Math.max(64, this.config.captureSize);
+    // Clamped rather than trusted. On a phone a capture size that would be merely slow on a desktop
+    // is instead the allocation that gets the tab killed, and the failure gives no error to report.
+    const longest = Math.max(64, Math.min(getDeviceLimits().maxCaptureSize, this.config.captureSize));
     const aspect = source.width / source.height;
     const raw = aspect >= 1 ? { width: longest, height: longest / aspect } : { width: longest * aspect, height: longest };
     return {
@@ -431,6 +442,38 @@ export class Engine {
    * numbers therefore run slightly pessimistic against the live frame rate, and the shape of the
    * curve across sizes, which is what is being asked about, is right.
    */
+  /**
+   * Median wall time for one fully-serialized frame at the current configuration.
+   *
+   * Public because the cost of a *model* is as worth measuring as the cost of a capture size, and
+   * that comparison has to be driven from outside — it means loading a different model between
+   * measurements, which the engine has no business orchestrating.
+   */
+  measure(frames = 12): number {
+    const frame = this.source?.frame;
+    if (!frame) throw new Error('Nothing to measure: no source is running.');
+
+    // Warm-up covers shader compilation for any new variant and the first allocation of every
+    // tensor shape at this size. Timing those would measure the compiler, not the pipeline.
+    for (let i = 0; i < 3; i++) {
+      this.drawOnce(frame);
+      this.ops.endFrame();
+    }
+    this.ops.finish();
+
+    const samples: number[] = [];
+    for (let i = 0; i < frames; i++) {
+      const start = performance.now();
+      this.drawOnce(frame);
+      this.ops.finish();
+      samples.push(performance.now() - start);
+      this.ops.endFrame();
+    }
+
+    samples.sort((a, b) => a - b);
+    return samples[Math.floor(samples.length / 2)];
+  }
+
   async benchmark(sizes: number[], framesPerSize = 12): Promise<BenchmarkRow[]> {
     const frame = this.source?.frame;
     if (!frame) throw new Error('Nothing to benchmark: no source is running.');
@@ -449,25 +492,7 @@ export class Engine {
         // is exactly the allocation spike this is meant to be measuring around.
         this.ops.trim();
 
-        // Warm-up covers shader compilation for any new variant and the first allocation of every
-        // tensor shape at this size. Timing those would measure the compiler, not the pipeline.
-        for (let i = 0; i < 3; i++) {
-          this.drawOnce(frame);
-          this.ops.endFrame();
-        }
-        this.ops.finish();
-
-        const samples: number[] = [];
-        for (let i = 0; i < framesPerSize; i++) {
-          const start = performance.now();
-          this.drawOnce(frame);
-          this.ops.finish();
-          samples.push(performance.now() - start);
-          this.ops.endFrame();
-        }
-
-        samples.sort((a, b) => a - b);
-        const median = samples[Math.floor(samples.length / 2)];
+        const median = this.measure(framesPerSize);
         rows.push({
           captureSize: size,
           width: this.captureWidth,
