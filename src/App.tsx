@@ -226,7 +226,14 @@ export default function App() {
             </ButtonRow>
           </div>
         ) : null}
-        {status?.error ? <div className="stage-error">{status.error}</div> : null}
+        {status?.error ? (
+          <div className="stage-error">
+            {status.error}
+            {status.contextLost ? (
+              <button className="button small" onClick={() => window.location.reload()}>Reload</button>
+            ) : null}
+          </div>
+        ) : null}
       </main>
 
       <aside className="panel">
@@ -415,6 +422,21 @@ export default function App() {
               step={2}
               onChange={(kernel) => patchConfig({ shallow: { ...config.shallow, kernel } })}
               format={(value) => `${value}×${value}`}
+            />
+            <Slider
+              label="Colour hold"
+              value={config.shallow.colourHold}
+              min={0}
+              max={0.4}
+              step={0.005}
+              onChange={(colourHold) => patchConfig({ shallow: { ...config.shallow, colourHold } })}
+              title="Pulls each ascent step back toward the source frame. Raise this if colours are running away to saturated primaries."
+            />
+            <Toggle
+              label="Share gradient across colours"
+              checked={config.shallow.sharedGradient}
+              onChange={(sharedGradient) => patchConfig({ shallow: { ...config.shallow, sharedGradient } })}
+              title="On, one scale is applied to R, G and B together, which keeps hue. Off, each channel is normalized alone — stronger colour shifts, and it will rail to primaries."
             />
             <Slider
               label="Bank seed"

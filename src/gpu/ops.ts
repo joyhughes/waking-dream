@@ -13,6 +13,7 @@ import {
   resizeShader,
   toCanvasShader,
   warpShader,
+  type ClampMode,
   type ConvActivation,
 } from './shaders';
 
@@ -28,6 +29,10 @@ const DEFAULT_MAX_TARGETS = 4;
 
 /** Guards the variance in instance normalization, matching PyTorch's `InstanceNorm2d` default. */
 const NORM_EPSILON = 1e-5;
+
+/** How long a reduction target may go unused before it is deleted, and how often that is checked. */
+const SCRATCH_MAX_IDLE_FRAMES = 90;
+const SCRATCH_SWEEP_INTERVAL = 30;
 
 export interface ConvSpec {
   kernel: number;
@@ -105,7 +110,14 @@ export class Ops {
   private readonly programs: ProgramCache;
   private readonly targets: RenderTargets;
   private readonly maxTargets: number;
-  private readonly scratch2D = new Map<string, WebGLTexture>();
+  /**
+   * Reduction targets, cached by size. Stamped with the frame they were last wanted on and evicted
+   * the same way the tensor pool is — these are keyed by exact pixel size too, so without eviction
+   * a sweep of the capture-size control leaves a texture behind for every size it passed through.
+   */
+  private readonly scratch2D = new Map<string, { texture: WebGLTexture; lastUsedFrame: number; bytes: number }>();
+  private frame = 0;
+  private scratchBytes = 0;
   private sourceTexture: WebGLTexture | null = null;
 
   constructor(private readonly ctx: GlContext) {
@@ -160,7 +172,7 @@ export class Ops {
     output: GpuTensor,
     affine: DataTexture,
     affineOffset: number,
-    options: { relu: boolean; skip?: GpuTensor | null },
+    options: { relu: boolean; skip?: GpuTensor | null; sharedRgb?: boolean },
   ): void {
     const stats = this.reduceStats(input);
     const skip = options.skip ?? null;
@@ -168,7 +180,12 @@ export class Ops {
     for (let base = 0; base < output.groups; base += this.maxTargets) {
       const count = Math.min(this.maxTargets, output.groups - base);
       const program = this.programs.get(
-        normShader({ targets: count, relu: options.relu, residual: skip !== null }),
+        normShader({
+          targets: count,
+          relu: options.relu,
+          residual: skip !== null,
+          sharedRgb: options.sharedRgb ?? false,
+        }),
       );
       this.targets.drawInto(output, base, count, () => {
         program.use().tensor('uInput', input);
@@ -241,7 +258,10 @@ export class Ops {
   private scratchTexture(width: number, height: number, role: string): WebGLTexture {
     const key = `${role}:${width}x${height}`;
     const existing = this.scratch2D.get(key);
-    if (existing) return existing;
+    if (existing) {
+      existing.lastUsedFrame = this.frame;
+      return existing.texture;
+    }
 
     const { gl } = this.ctx;
     const texture = gl.createTexture();
@@ -254,8 +274,42 @@ export class Ops {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.bindTexture(gl.TEXTURE_2D, null);
 
-    this.scratch2D.set(key, texture);
+    this.scratch2D.set(key, { texture, lastUsedFrame: this.frame, bytes: width * height * 16 });
+    this.scratchBytes += width * height * 16;
     return texture;
+  }
+
+  /**
+   * Ends a frame: returns everything the frame used and lets go of what has gone unused.
+   *
+   * Callers must use this rather than `pool.releaseAll()` directly, because the reduction scratch
+   * has the same unbounded-growth problem and nothing else advances the clock that ages it out.
+   */
+  endFrame(): void {
+    this.pool.releaseAll();
+    this.frame++;
+
+    if (this.frame % SCRATCH_SWEEP_INTERVAL !== 0) return;
+    const { gl } = this.ctx;
+    for (const [key, entry] of this.scratch2D) {
+      if (this.frame - entry.lastUsedFrame <= SCRATCH_MAX_IDLE_FRAMES) continue;
+      gl.deleteTexture(entry.texture);
+      this.scratchBytes -= entry.bytes;
+      this.scratch2D.delete(key);
+    }
+  }
+
+  /** Frees every cached reduction target and pooled tensor at once, for a capture-size change. */
+  trim(): void {
+    const { gl } = this.ctx;
+    for (const entry of this.scratch2D.values()) gl.deleteTexture(entry.texture);
+    this.scratch2D.clear();
+    this.scratchBytes = 0;
+    this.pool.trim();
+  }
+
+  get scratchMegabytes(): number {
+    return this.scratchBytes / (1024 * 1024);
   }
 
   /** Resamples one channel group. The network only ever upsamples RGB-width or feature-width group 0..n. */
@@ -277,10 +331,10 @@ export class Ops {
   combine(
     output: GpuTensor,
     terms: { tensor: GpuTensor; weight: number }[],
-    options: { bias?: number; clamp01?: boolean } = {},
+    options: { bias?: number; clamp?: ClampMode } = {},
   ): void {
     const count = terms.length as 1 | 2 | 3;
-    const program = this.programs.get(combineShader(count, options.clamp01 ?? false));
+    const program = this.programs.get(combineShader(count, options.clamp ?? 'none'));
     this.targets.drawInto(output, 0, 1, () => {
       program.use();
       const names = ['uA', 'uB', 'uC'];
@@ -396,8 +450,9 @@ export class Ops {
 
   dispose(): void {
     const { gl } = this.ctx;
-    for (const texture of this.scratch2D.values()) gl.deleteTexture(texture);
+    for (const entry of this.scratch2D.values()) gl.deleteTexture(entry.texture);
     this.scratch2D.clear();
+    this.scratchBytes = 0;
     if (this.sourceTexture) gl.deleteTexture(this.sourceTexture);
     this.sourceTexture = null;
     this.programs.dispose();

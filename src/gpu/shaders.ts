@@ -36,6 +36,35 @@ function outputDeclarations(targets: number): string {
 
 export type ConvActivation = 'none' | 'relu' | 'tanh01';
 
+/** How a pass keeps its result inside the displayable range. */
+export type ClampMode = 'none' | 'hard' | 'soft';
+
+/**
+ * A compressor that is linear through the middle of the range and asymptotic at the ends.
+ *
+ * A hard clamp is a one-way ratchet inside a feedback loop. Gradient ascent pushes toward extreme
+ * values because that is where a filter response is largest, and every frame the clamp discards the
+ * part of the step that went past the limit while keeping every step that did not -- so channels
+ * walk to 0 or 1 and stay there. Because each channel rails independently, the picture ends up on
+ * the eight corners of the RGB cube: pure reds, cyans, whites and blacks, with nothing in between.
+ *
+ * Rolling off smoothly instead leaves a gradient near the limits for the next step to move within,
+ * so highlights keep their shape. The middle of the range is untouched, so ordinary tones are not
+ * washed out by the compression.
+ */
+const SOFT_CLIP = `
+const float CLIP_KNEE = 0.75;
+
+vec4 softClip(vec4 value) {
+  vec4 centered = value - 0.5;
+  vec4 distance = abs(centered) * 2.0;
+  vec4 over = max(distance - CLIP_KNEE, vec4(0.0));
+  vec4 compressed = CLIP_KNEE + over / (1.0 + over / (1.0 - CLIP_KNEE));
+  vec4 limited = mix(distance, compressed, step(vec4(CLIP_KNEE), distance));
+  return clamp(sign(centered) * limited * 0.5 + 0.5, 0.0, 1.0);
+}
+`;
+
 export interface ConvShaderOptions {
   /** Odd kernel side. Compiled in, so 3x3 and 9x9 are separate programs. */
   kernel: number;
@@ -234,6 +263,17 @@ export interface NormShaderOptions {
   relu: boolean;
   /** Fuses the block's skip connection into the second normalization's write. */
   residual: boolean;
+  /**
+   * Pools the statistics across R, G and B instead of computing them per channel.
+   *
+   * Only meaningful for a three-channel image, and it exists for one job: normalizing an ascent
+   * gradient. Per-channel normalization forces every colour channel to carry the same amount of
+   * energy no matter what the gradient actually asked for, which decouples the channels and lets
+   * each drift to its own limit -- the failure that turns a dream into eight flat colours. One
+   * shared scale rescales the direction without rotating it, so the hue the gradient pointed at is
+   * the hue that gets drawn.
+   */
+  sharedRgb?: boolean;
 }
 
 /**
@@ -250,7 +290,19 @@ export interface NormShaderOptions {
  * change, only the per-channel scale and shift this shader multiplies by.
  */
 export function normShader(options: NormShaderOptions): string {
-  const { targets, relu, residual } = options;
+  const { targets, relu, residual, sharedRgb = false } = options;
+
+  // Three channels pooled into one population: the padded fourth channel is excluded, since it
+  // holds zeros and would drag the mean toward zero and inflate the variance.
+  const statistics = sharedRgb
+    ? `    float pooledSum = sum.x + sum.y + sum.z;
+    float pooledSumSq = sumSq.x + sumSq.y + sumSq.z;
+    float pooledMean = pooledSum * uInvN / 3.0;
+    float pooledVariance = max(pooledSumSq * uInvN / 3.0 - pooledMean * pooledMean, 0.0);
+    vec4 mean = vec4(pooledMean);
+    vec4 variance = vec4(pooledVariance);`
+    : `    vec4 mean = sum * uInvN;
+    vec4 variance = max(sumSq * uInvN - mean * mean, vec4(0.0));`;
 
   const body: string[] = [];
   for (let t = 0; t < targets; t++) {
@@ -258,8 +310,7 @@ export function normShader(options: NormShaderOptions): string {
     int g = uGroupBase + ${t};
     vec4 sum = texelFetch(uSum, ivec2(g, 0), 0);
     vec4 sumSq = texelFetch(uSumSq, ivec2(g, 0), 0);
-    vec4 mean = sum * uInvN;
-    vec4 variance = max(sumSq * uInvN - mean * mean, vec4(0.0));
+${statistics}
     vec4 x = texelFetch(uInput, ivec3(px, g), 0);
     vec4 y = (x - mean) * inversesqrt(variance + uEps) * affine(g) + affine(uGTotal + g);
 ${residual ? `    y += texelFetch(uSkip, ivec3(px, g), 0);` : ''}
@@ -333,12 +384,16 @@ ${
  * difference of two resamplings). They are all `a*A + b*B + c*C + bias`; giving each its own shader
  * would only spread the same three lines across three files.
  */
-export function combineShader(terms: 1 | 2 | 3, clamp01: boolean): string {
+export function combineShader(terms: 1 | 2 | 3, clamp: ClampMode): string {
   const inputs = ['uA', 'uB', 'uC'].slice(0, terms);
   const weights = ['uWa', 'uWb', 'uWc'].slice(0, terms);
   const sum = inputs.map((name, i) => `${weights[i]} * texelFetch(${name}, p, 0)`).join(' + ');
 
+  const limit =
+    clamp === 'soft' ? 'softClip(value)' : clamp === 'hard' ? 'clamp(value, vec4(0.0), vec4(1.0))' : 'value';
+
   return `${PREAMBLE}
+${clamp === 'soft' ? SOFT_CLIP : ''}
 ${inputs.map((name) => `uniform sampler2DArray ${name};`).join('\n')}
 ${weights.map((name) => `uniform float ${name};`).join('\n')}
 uniform float uBias;
@@ -349,7 +404,7 @@ layout(location = 0) out vec4 o0;
 void main() {
   ivec3 p = ivec3(ivec2(gl_FragCoord.xy), uGroupBase);
   vec4 value = ${sum} + vec4(uBias);
-  o0 = ${clamp01 ? 'clamp(value, vec4(0.0), vec4(1.0))' : 'value'};
+  o0 = ${limit};
 }
 `;
 }

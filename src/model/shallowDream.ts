@@ -35,6 +35,23 @@ export interface ShallowDreamParams {
   filters: number;
   kernel: number;
   seed: number;
+  /**
+   * A restoring force pulling each step back toward the frame the octave started from.
+   *
+   * Ascent has no opinion about colour beyond "more response", and left alone it drives every
+   * channel outward until the picture is made of saturated primaries. This is the counterweight:
+   * the Yosinski et al. 2015 decay regularizer, aimed at the source frame rather than at grey, so
+   * it holds the photograph's colours rather than washing them out. 0 removes it entirely.
+   */
+  colourHold: number;
+  /**
+   * Normalize the ascent gradient across R, G and B together rather than per channel.
+   *
+   * Per-channel normalization gives each colour the same step regardless of what the gradient
+   * asked for, so the channels drift independently and the image collapses onto the corners of the
+   * RGB cube. Sharing one scale rescales the gradient without rotating it, which keeps hue.
+   */
+  sharedGradient: boolean;
 }
 
 /**
@@ -54,6 +71,8 @@ export const DEFAULT_SHALLOW_PARAMS: ShallowDreamParams = {
   filters: 16,
   kernel: 5,
   seed: 7,
+  colourHold: 0.08,
+  sharedGradient: true,
 };
 
 /** Small deterministic PRNG, so a given seed always gives the same bank on any machine. */
@@ -256,8 +275,17 @@ export class ShallowDream {
 
   /**
    * One ascent step at the current resolution. Returns a new pooled tensor; `image` is untouched.
+   *
+   * `anchor` is the frame this octave started from, which the step is pulled back toward by
+   * `colourHold`. Without something to pull against, the only force acting on a pixel is "make the
+   * filter response larger", and that force always points outward.
    */
-  private step(image: GpuTensor, params: ShallowDreamParams, bank: CompiledBank): GpuTensor {
+  private step(
+    image: GpuTensor,
+    anchor: GpuTensor,
+    params: ShallowDreamParams,
+    bank: CompiledBank,
+  ): GpuTensor {
     const { pool } = this.ops;
 
     const activations = pool.acquire({ width: image.width, height: image.height, channels: bank.filters });
@@ -284,17 +312,22 @@ export class ShallowDream {
     // normalization the classic DeepDream notebooks use, minus the pyramid — the octave loop below
     // is already providing the multi-scale part.
     const normalized = pool.acquire({ width: image.width, height: image.height, channels: 3 });
-    this.ops.instanceNorm(gradient, normalized, this.unitAffine, 0, { relu: false });
+    this.ops.instanceNorm(gradient, normalized, this.unitAffine, 0, {
+      relu: false,
+      sharedRgb: params.sharedGradient,
+    });
     pool.release(gradient);
 
+    const hold = Math.max(0, Math.min(0.9, params.colourHold));
     const stepped = pool.acquire({ width: image.width, height: image.height, channels: 3 });
     this.ops.combine(
       stepped,
       [
-        { tensor: image, weight: 1 },
+        { tensor: image, weight: 1 - hold },
+        { tensor: anchor, weight: hold },
         { tensor: normalized, weight: params.stepSize },
       ],
-      { clamp01: true },
+      { clamp: 'soft' },
     );
     pool.release(normalized);
 
@@ -328,7 +361,7 @@ export class ShallowDream {
       this.ops.combine(small, [{ tensor: base, weight: 1 }]);
 
       for (let step = 0; step < params.steps; step++) {
-        const next = this.step(small, params, bank);
+        const next = this.step(small, base, params, bank);
         pool.release(small);
         small = next;
       }
@@ -354,7 +387,7 @@ export class ShallowDream {
           { tensor: current, weight: 1 },
           { tensor: upsampled, weight: 1 },
         ],
-        { clamp01: true },
+        { clamp: 'soft' },
       );
       pool.release(upsampled);
       pool.release(current);

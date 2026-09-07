@@ -86,6 +86,8 @@ export interface BenchmarkRow {
 
 export interface EngineStatus {
   running: boolean;
+  /** True once the GPU has taken the context away. Nothing will render again without a reload. */
+  contextLost: boolean;
   captureWidth: number;
   captureHeight: number;
   timing: TimingSnapshot;
@@ -124,6 +126,7 @@ export class Engine {
   private error: string | null = null;
   private captureWidth = 0;
   private captureHeight = 0;
+  private contextLost = false;
 
   onStatus: ((status: EngineStatus) => void) | null = null;
 
@@ -132,6 +135,27 @@ export class Engine {
     this.ops = new Ops(this.ctx);
     this.shallow = new ShallowDream(this.ctx, this.ops);
     this.timer = new FrameTimer(this.ctx);
+
+    // A lost context does not throw. Every GL call afterwards silently does nothing, so without
+    // this the app carries on at full frame rate drawing a black canvas and reporting no error --
+    // which is a far worse failure than saying so. Losing it happens for real reasons: the machine
+    // sleeping, the GPU being reset under memory pressure, or a driver crash in another tab.
+    canvas.addEventListener('webglcontextlost', (event) => {
+      // Without preventDefault the browser will not even attempt to give the context back.
+      event.preventDefault();
+      this.contextLost = true;
+      this.error = 'The GPU context was lost. Reload the page to start again.';
+      this.stop();
+      this.onStatus?.(this.status());
+    });
+
+    canvas.addEventListener('webglcontextrestored', () => {
+      // Every texture, program and framebuffer this app holds belongs to the dead context and none
+      // of them come back. Rebuilding all of it in place would be a second, barely-exercised code
+      // path through every module here; a reload does the same thing correctly.
+      this.error = 'The GPU context came back, but the pipeline needs a reload to rebuild.';
+      this.onStatus?.(this.status());
+    });
   }
 
   getConfig(): EngineConfig {
@@ -145,6 +169,10 @@ export class Engine {
       // The persistent feedback buffer is tied to the capture size, so a size change starts the
       // recursion over rather than resampling a buffer of the wrong shape into it.
       this.discardFeedback();
+      // Every pooled buffer is now the wrong size. Dropping them immediately matters because this
+      // control gets swept rather than set: dragging it end to end asks for over a hundred distinct
+      // sizes, and holding a set for each is how the tab gets killed for running out of memory.
+      this.ops.trim();
     }
   }
 
@@ -198,7 +226,7 @@ export class Engine {
   }
 
   start(): void {
-    if (this.running) return;
+    if (this.running || this.contextLost) return;
     this.running = true;
     const tick = (now: number) => {
       this.rafHandle = requestAnimationFrame(tick);
@@ -227,7 +255,7 @@ export class Engine {
       this.error = error instanceof Error ? error.message : String(error);
       this.stop();
     } finally {
-      this.ops.pool.releaseAll();
+      this.ops.endFrame();
       this.timer.endFrame(cpuStart);
       this.onStatus?.(this.status());
     }
@@ -278,7 +306,7 @@ export class Engine {
         { tensor: captured, weight: feedback.source },
         { tensor: warped, weight: feedback.previous },
       ],
-      { clamp01: true },
+      { clamp: 'soft' },
     );
     this.ops.pool.release(warped);
     return mixed;
@@ -313,7 +341,7 @@ export class Engine {
     // A copy rather than keeping the tensor itself: `output` belongs to the pool and will be handed
     // to some other layer on the next frame, and the network's output size can differ from the
     // capture size by a rounding pixel, which this pass resolves along the way.
-    this.ops.combine(this.previous, [{ tensor: output, weight: 1 }], { clamp01: true });
+    this.ops.combine(this.previous, [{ tensor: output, weight: 1 }], { clamp: 'soft' });
     this.previousValid = true;
   }
 
@@ -387,12 +415,15 @@ export class Engine {
       for (const size of sizes) {
         this.config = { ...this.config, captureSize: size };
         this.discardFeedback();
+        // Each size in the sweep has its own set of buffers, and eleven sizes' worth held at once
+        // is exactly the allocation spike this is meant to be measuring around.
+        this.ops.trim();
 
         // Warm-up covers shader compilation for any new variant and the first allocation of every
         // tensor shape at this size. Timing those would measure the compiler, not the pipeline.
         for (let i = 0; i < 3; i++) {
           this.drawOnce(frame);
-          this.ops.pool.releaseAll();
+          this.ops.endFrame();
         }
         this.ops.finish();
 
@@ -402,7 +433,7 @@ export class Engine {
           this.drawOnce(frame);
           this.ops.finish();
           samples.push(performance.now() - start);
-          this.ops.pool.releaseAll();
+          this.ops.endFrame();
         }
 
         samples.sort((a, b) => a - b);
@@ -432,6 +463,7 @@ export class Engine {
   status(): EngineStatus {
     return {
       running: this.running,
+      contextLost: this.contextLost,
       captureWidth: this.captureWidth,
       captureHeight: this.captureHeight,
       timing: this.timer.snapshot(),

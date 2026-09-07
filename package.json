@@ -11,6 +11,9 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@tensorflow-models/mobilenet": "^2.1.1",
+    "@tensorflow/tfjs": "^4.22.0",
+    "@tensorflow/tfjs-backend-webgpu": "^4.22.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
