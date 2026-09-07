@@ -474,6 +474,66 @@ void main() {
 }
 
 /**
+ * Pulls the output's hue and saturation back toward the source frame, leaving brightness alone.
+ *
+ * Neither processor has any reason to respect the colours it started with. Gradient ascent is
+ * maximizing a response, and a trained style network is repainting in its own palette by design —
+ * so a face can come back green, and over a feedback loop the whole frame drifts somewhere the
+ * scene never was. This constrains the result rather than hoping it will behave.
+ *
+ * Brightness is what carries the drawn structure, so it passes through untouched: at an amount of 1
+ * the picture keeps exactly the colours of the camera frame and every hallucinated form survives as
+ * light and shade within them. (The same transform as the dream project's `preserveColor`.)
+ *
+ * Hue is interpolated the short way around the wheel. A plain blend from 0.99 to 0.01 would travel
+ * through the entire spectrum to cross a boundary the eye sees as no distance at all.
+ */
+export function preserveColorShader(): string {
+  return `${PREAMBLE}
+uniform sampler2DArray uDreamed;
+uniform sampler2DArray uReference;
+uniform float uAmount;
+
+layout(location = 0) out vec4 o0;
+
+// The compact branchless conversions; standard, and the exact form matters less than that the two
+// are inverses of each other.
+vec3 rgbToHsv(vec3 c) {
+  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  float e = 1.0e-10;
+  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+vec3 hsvToRgb(vec3 c) {
+  vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+  vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+void main() {
+  ivec3 p = ivec3(ivec2(gl_FragCoord.xy), 0);
+  vec3 dreamed = texelFetch(uDreamed, p, 0).rgb;
+  vec3 reference = texelFetch(uReference, p, 0).rgb;
+
+  vec3 dreamedHsv = rgbToHsv(clamp(dreamed, 0.0, 1.0));
+  vec3 referenceHsv = rgbToHsv(clamp(reference, 0.0, 1.0));
+
+  // Shortest signed distance around the wheel, in [-0.5, 0.5).
+  float offset = referenceHsv.x - dreamedHsv.x + 0.5;
+  float shortest = offset - floor(offset) - 0.5;
+
+  float hue = fract(dreamedHsv.x + shortest * uAmount);
+  float saturation = mix(dreamedHsv.y, referenceHsv.y, uAmount);
+
+  o0 = vec4(hsvToRgb(vec3(hue, saturation, dreamedHsv.z)), 0.0);
+}
+`;
+}
+
+/**
  * Warps a tensor by an affine transform, used on the previous output before it is fed back in.
  *
  * A slow zoom, rotation, and drift is what turns a per-frame filter into the recursion DeepDream is

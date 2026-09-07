@@ -695,6 +695,23 @@ export default function App() {
           </ButtonRow>
         </Section>
 
+        <Section title="Colour" hint={config.colorPreservation > 0 ? `preserved ${config.colorPreservation.toFixed(2)}` : 'free'}>
+          <Slider
+            label="Colour preservation"
+            value={config.colorPreservation}
+            min={0}
+            max={1}
+            step={0.01}
+            onChange={(colorPreservation) => patchConfig({ colorPreservation })}
+            title="Pulls hue and saturation back toward the source frame, leaving brightness — and so the drawn structure — alone. At 1 the camera's colours are kept exactly."
+          />
+          <p className="note">
+            Brightness is where the drawn structure lives, so it is never touched. At 1 the frame
+            keeps the camera's colours exactly and every hallucinated form survives as light and
+            shade within them. Applied before the feedback loop, so the recursion is held too.
+          </p>
+        </Section>
+
         <Section title="Display" defaultOpen={false}>
           <Slider
             label="Effect amount"

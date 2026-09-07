@@ -8,6 +8,7 @@ import {
   convShader,
   fromSourceShader,
   normShader,
+  preserveColorShader,
   reduceFrom2DShader,
   reduceFromTensorShader,
   resizeShader,
@@ -388,6 +389,20 @@ export class Ops {
         .vec2('uOffset', offset[0], offset[1])
         .vec2('uOutSizeInv', 1 / output.width, 1 / output.height)
         .float('uMirror', options.mirror ? 1 : 0);
+    });
+  }
+
+  /**
+   * Blends the output's hue and saturation back toward the reference, keeping its brightness.
+   *
+   * Runs before the feedback buffer is written rather than only on the way to the canvas, so the
+   * recursion inherits the constrained colours too — otherwise the loop keeps drifting underneath
+   * and the slider only hides it at the last moment.
+   */
+  preserveColor(dreamed: GpuTensor, reference: GpuTensor, output: GpuTensor, amount: number): void {
+    const program = this.programs.get(preserveColorShader());
+    this.targets.drawInto(output, 0, 1, () => {
+      program.use().tensor('uDreamed', dreamed).tensor('uReference', reference).float('uAmount', amount);
     });
   }
 

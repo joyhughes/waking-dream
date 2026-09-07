@@ -46,6 +46,14 @@ export interface DisplayConfig {
 
 export interface EngineConfig {
   processor: ProcessorMode;
+  /**
+   * How strongly the result's hue and saturation are pulled back toward the source frame.
+   *
+   * 0 leaves the colours the processor chose; 1 keeps the camera's colours exactly and lets only
+   * brightness carry what was drawn. Applied before the feedback buffer is written, so the
+   * recursion is constrained too rather than the drift merely being hidden at the end.
+   */
+  colorPreservation: number;
   /** Longest side of the tensor the network actually sees. The size/speed dial. */
   captureSize: number;
   shallow: ShallowDreamParams;
@@ -58,6 +66,7 @@ export interface EngineConfig {
 
 export const DEFAULT_CONFIG: EngineConfig = {
   processor: 'shallow',
+  colorPreservation: 0,
   captureSize: 256,
   shallow: DEFAULT_SHALLOW_PARAMS,
   modelControls: [],
@@ -278,7 +287,8 @@ export class Engine {
     this.ops.fromSource(frame, captured, { mirror: this.config.mirror ?? source.defaultMirror });
 
     const input = this.buildNetworkInput(captured, width, height);
-    const output = this.process(input);
+    const processed = this.process(input);
+    const output = this.applyColorPreservation(processed, captured, width, height);
 
     this.retainFeedback(output, width, height);
 
@@ -324,6 +334,26 @@ export class Engine {
       default:
         return input;
     }
+  }
+
+  /**
+   * Constrains the processor's colours against the captured frame, when asked to.
+   *
+   * At zero this is skipped entirely rather than run with an amount of zero — it is a full-frame
+   * pass, and the common case is not wanting it.
+   */
+  private applyColorPreservation(
+    processed: GpuTensor,
+    captured: GpuTensor,
+    width: number,
+    height: number,
+  ): GpuTensor {
+    const amount = this.config.colorPreservation;
+    if (amount <= 0) return processed;
+
+    const preserved = this.ops.pool.acquire({ width, height, channels: 3 });
+    this.ops.preserveColor(processed, captured, preserved, Math.min(1, amount));
+    return preserved;
   }
 
   /** Copies this frame's output into the persistent buffer the next frame will warp and mix in. */
