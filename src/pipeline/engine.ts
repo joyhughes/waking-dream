@@ -6,6 +6,7 @@ import { DEFAULT_SHALLOW_PARAMS, ShallowDream, type ShallowDreamParams } from '.
 import type { FrameSource } from './sources';
 import { AudioAnalyser, DEFAULT_BAND_ASSIGNMENTS, FREQUENCY_BANDS, mapLevelsToControls } from './audio';
 import { getDeviceLimits } from './deviceLimits';
+import { applyModulations, type ModulationMap } from './modulation';
 import { FrameTimer, type TimingSnapshot } from './stats';
 
 export type ProcessorMode = 'off' | 'shallow' | 'model';
@@ -85,6 +86,8 @@ export interface EngineConfig {
   feedback: FeedbackConfig;
   display: DisplayConfig;
   audio: AudioConfig;
+  /** Sound routings, keyed by modulation target id. See `modulation.ts`. */
+  modulations: ModulationMap;
   /** Null follows the source's own default: mirrored for a camera, not for a file. */
   mirror: boolean | null;
   /**
@@ -117,6 +120,7 @@ export const DEFAULT_CONFIG: EngineConfig = {
   },
   display: { mix: 1, gain: 1, saturation: 1 },
   audio: { enabled: false, amount: 1, gain: 1.2, sensitivity: 0.7, assignments: [...DEFAULT_BAND_ASSIGNMENTS] },
+  modulations: {},
   mirror: null,
   fillScreen: false,
 };
@@ -186,6 +190,14 @@ export class Engine {
   private audio: AudioAnalyser | null = null;
   /** Last read band levels, kept so the meter can be drawn without a second analyser pass. */
   private audioLevels: number[] = new Array(FREQUENCY_BANDS.length).fill(0);
+  /**
+   * What this frame is actually running: the config with any sound routings applied.
+   *
+   * Held separately from `config` because `config` stays the user's settings — the sliders must not
+   * appear to move on their own, and the values written back out to a saved PNG have to be the ones
+   * that were set rather than wherever the music happened to push them at the moment of capture.
+   */
+  private active: EngineConfig = DEFAULT_CONFIG;
 
   onStatus: ((status: EngineStatus) => void) | null = null;
 
@@ -338,26 +350,35 @@ export class Engine {
    */
   private drawOnce(frame: TexImageSource): void {
     const source = this.source!;
+
+    // Read once per frame. The analyser advances its own attack and release on every call, so
+    // asking twice would run the envelopes at double speed.
+    const levels =
+      this.config.audio.enabled && this.audio ? this.audio.levels() : null;
+    if (levels) this.audioLevels = Array.from(levels);
+
+    this.active = levels ? applyModulations(this.config, levels, this.config.modulations) : this.config;
+
     const { width, height } = this.captureDimensions(source);
     this.captureWidth = width;
     this.captureHeight = height;
     this.resizeCanvas(width, height);
 
     const captured = this.ops.pool.acquire({ width, height, channels: 3 });
-    this.ops.fromSource(frame, captured, { mirror: this.config.mirror ?? source.defaultMirror });
+    this.ops.fromSource(frame, captured, { mirror: this.active.mirror ?? source.defaultMirror });
 
     const input = this.buildNetworkInput(captured, width, height);
-    const processed = this.process(input);
+    const processed = this.process(input, levels);
     const output = this.applyColorPreservation(processed, captured, width, height);
 
     this.retainFeedback(output, width, height);
 
-    this.ops.toCanvas(output, captured, this.canvas.width, this.canvas.height, this.config.display);
+    this.ops.toCanvas(output, captured, this.canvas.width, this.canvas.height, this.active.display);
   }
 
   /** Mixes the live frame with the warped previous output, or passes the live frame straight through. */
   private buildNetworkInput(captured: GpuTensor, width: number, height: number): GpuTensor {
-    const { feedback } = this.config;
+    const { feedback } = this.active;
     if (!feedback.enabled || !this.previousValid || !this.previous) return captured;
 
     const warped = this.ops.pool.acquire({ width, height, channels: 3 });
@@ -382,15 +403,15 @@ export class Engine {
     return mixed;
   }
 
-  private process(input: GpuTensor): GpuTensor {
-    switch (this.config.processor) {
+  private process(input: GpuTensor, levels: ArrayLike<number> | null): GpuTensor {
+    switch (this.active.processor) {
       case 'model': {
         if (!this.model) return input;
-        this.model.setControls(this.resolveControls());
+        this.model.setControls(this.resolveControls(levels));
         return this.model.forward(input);
       }
       case 'shallow':
-        return this.shallow.run(input, this.config.shallow);
+        return this.shallow.run(input, this.active.shallow);
       default:
         return input;
     }
@@ -408,7 +429,7 @@ export class Engine {
     width: number,
     height: number,
   ): GpuTensor {
-    const amount = this.config.colorPreservation;
+    const amount = this.active.colorPreservation;
     if (amount <= 0) return processed;
 
     const preserved = this.ops.pool.acquire({ width, height, channels: 3 });
@@ -422,21 +443,18 @@ export class Engine {
    * Read here rather than pushed in from the UI because it changes every frame. Routing sixty
    * updates a second through React state would cost far more than the forward pass it is feeding.
    */
-  private resolveControls(): number[] {
-    const base = this.config.modelControls;
-    const { enabled, amount, gain, sensitivity, assignments } = this.config.audio;
+  private resolveControls(levels: ArrayLike<number> | null): number[] {
+    const base = this.active.modelControls;
+    const { enabled, amount, gain, sensitivity, assignments } = this.active.audio;
 
-    if (!enabled || !this.audio) return base;
-
-    const levels = this.audio.levels();
-    this.audioLevels = Array.from(levels);
+    if (!enabled || !levels) return base;
 
     return mapLevelsToControls(base, levels, { assignments, gain, sensitivity, amount });
   }
 
   /** Copies this frame's output into the persistent buffer the next frame will warp and mix in. */
   private retainFeedback(output: GpuTensor, width: number, height: number): void {
-    if (!this.config.feedback.enabled) {
+    if (!this.active.feedback.enabled) {
       this.previousValid = false;
       return;
     }

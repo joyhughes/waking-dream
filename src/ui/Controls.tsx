@@ -1,4 +1,6 @@
 import { useState, type ReactNode } from 'react';
+import { FREQUENCY_BANDS } from '../pipeline/audio';
+import type { Modulation, ModulationMap } from '../pipeline/modulation';
 
 /**
  * The control-panel primitives.
@@ -133,5 +135,73 @@ export function FileButton({ label, accept, onFile, onFiles, multiple }: {
         }}
       />
     </label>
+  );
+}
+
+
+/**
+ * A slider that can hand itself over to a frequency band.
+ *
+ * The routing sits under the slider rather than in a separate matrix panel, because the question
+ * "what is driving this control" is one you ask while looking at the control. The slider keeps
+ * meaning what it meant — it is the resting value, and the band pushes away from it toward whichever
+ * end the depth points at — so routing a parameter never takes it out of your hands.
+ */
+export function ModulatedSlider({
+  targetId,
+  modulations,
+  onModulationChange,
+  audioEnabled,
+  ...slider
+}: Parameters<typeof Slider>[0] & {
+  targetId: string;
+  modulations: ModulationMap;
+  onModulationChange: (id: string, modulation: Modulation | null) => void;
+  audioEnabled: boolean;
+}) {
+  const routing = modulations[targetId];
+
+  return (
+    <div className="modulated">
+      <Slider {...slider} />
+
+      {routing ? (
+        <div className="routing">
+          <select
+            value={routing.band}
+            onChange={(event) => onModulationChange(targetId, { ...routing, band: Number(event.target.value) })}
+          >
+            {FREQUENCY_BANDS.map((band, index) => (
+              <option key={band.name} value={index}>{band.label}</option>
+            ))}
+          </select>
+          <input
+            type="range"
+            min={-1}
+            max={1}
+            step={0.05}
+            value={routing.depth}
+            onChange={(event) => onModulationChange(targetId, { ...routing, depth: Number(event.target.value) })}
+            title="How far, and which way, the band pushes this. Negative drives it toward the low end instead."
+          />
+          <span className="routing-depth">{routing.depth > 0 ? '+' : ''}{routing.depth.toFixed(2)}</span>
+          <button
+            className="routing-clear"
+            onClick={() => onModulationChange(targetId, null)}
+            title="Stop driving this from sound"
+          >
+            ×
+          </button>
+        </div>
+      ) : (
+        <button
+          className="routing-add"
+          onClick={() => onModulationChange(targetId, { band: 0, depth: 1 })}
+          title={audioEnabled ? 'Drive this from a frequency band' : 'Drive this from a frequency band — turn Sound on to hear it'}
+        >
+          ♪ route to a band
+        </button>
+      )}
+    </div>
   );
 }

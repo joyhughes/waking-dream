@@ -193,6 +193,7 @@ export async function runSelfTest(): Promise<CheckResult[]> {
     results.push(await checkParameterRoundTrip());
     results.push(await checkAudioBands());
     results.push(await checkAudioSensitivity());
+    results.push(await checkModulation());
     results.push(await checkBrowserTrainerParity(ctx, ops));
 
     const exported = await checkExportedReference(ctx, ops);
@@ -828,6 +829,61 @@ async function checkAudioSensitivity(): Promise<CheckResult> {
           ? `0.60/0.48 → ${flat.map((v) => v.toFixed(2)).join('/')} at 0, ` +
             `${keen.map((v) => v.toFixed(2)).join('/')} at 1 (ratio ${ratio(flat).toFixed(2)} → ${ratio(keen).toFixed(2)})`
           : problems.join('; '),
+    };
+  } catch (error) {
+    return { name, passed: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Checks that a sound routing moves a parameter the way the control promises.
+ *
+ * The promise is specific and worth holding to: the slider is the resting value, silence leaves it
+ * exactly there, and a full band reaches the parameter's limit in whichever direction the depth
+ * points. If silence moved the value at all, every routed slider would drift away from where it was
+ * set the moment the room went quiet.
+ */
+async function checkModulation(): Promise<CheckResult> {
+  const name = 'sound routings move a parameter between its slider value and its limit';
+  try {
+    const { applyModulations } = await import('./pipeline/modulation');
+    const { DEFAULT_CONFIG } = await import('./pipeline/engine');
+
+    const base = { ...DEFAULT_CONFIG, display: { ...DEFAULT_CONFIG.display, saturation: 1 } };
+    const silent = [0, 0, 0, 0, 0];
+    const loud = [1, 0, 1, 0, 0];
+    const problems: string[] = [];
+
+    // Nothing routed: the same object back, so the common path allocates nothing.
+    if (applyModulations(base, loud, {}) !== base) problems.push('an unrouted config was copied');
+
+    const up = { 'display.saturation': { band: 0, depth: 1 } };
+    if (applyModulations(base, silent, up).display.saturation !== 1) {
+      problems.push('silence moved the parameter off its slider value');
+    }
+    const atMax = applyModulations(base, loud, up).display.saturation;
+    if (Math.abs(atMax - 2) > 1e-6) problems.push(`full band should reach the max of 2, got ${atMax}`);
+
+    // Negative depth travels to the minimum instead.
+    const atMin = applyModulations(base, loud, { 'display.saturation': { band: 0, depth: -1 } }).display.saturation;
+    if (Math.abs(atMin - 0) > 1e-6) problems.push(`negative depth should reach the min of 0, got ${atMin}`);
+
+    // Half depth, half level: a quarter of the way to the limit.
+    const partial = applyModulations(base, [0.5, 0, 0, 0, 0], { 'display.saturation': { band: 0, depth: 0.5 } });
+    if (Math.abs(partial.display.saturation - 1.25) > 1e-6) {
+      problems.push(`half depth at half level should give 1.25, got ${partial.display.saturation}`);
+    }
+
+    // A band index a model does not have, and an id that is not a target, must both be harmless.
+    const unknown = applyModulations(base, loud, { 'nope.missing': { band: 0, depth: 1 }, 'display.gain': { band: 9, depth: 1 } });
+    if (unknown.display.gain !== base.display.gain) problems.push('an out-of-range band changed a value');
+
+    return {
+      name,
+      passed: problems.length === 0,
+      detail: problems.length === 0
+        ? `saturation 1 → ${atMax.toFixed(2)} at +1, ${atMin.toFixed(2)} at −1, 1.25 at half/half`
+        : problems.join('; '),
     };
   } catch (error) {
     return { name, passed: false, detail: error instanceof Error ? error.message : String(error) };

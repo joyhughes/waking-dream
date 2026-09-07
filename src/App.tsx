@@ -21,7 +21,8 @@ import { getDeviceLimits } from './pipeline/deviceLimits';
 import type { FeatureBank } from './model/shallowDream';
 import { BenchmarkPanel } from './ui/BenchmarkPanel';
 import { VideoTransport } from './ui/VideoTransport';
-import { ButtonRow, Choice, FileButton, Section, Slider, Toggle } from './ui/Controls';
+import { ButtonRow, Choice, FileButton, ModulatedSlider, Section, Slider, Toggle } from './ui/Controls';
+import type { Modulation } from './pipeline/modulation';
 
 /**
  * Capture sizes offered as one-click presets. The slider covers everything between; these are the
@@ -374,6 +375,24 @@ export default function App() {
     [config.audio, patchConfig],
   );
 
+  const setModulation = useCallback(
+    (id: string, modulation: Modulation | null) => {
+      const next = { ...config.modulations };
+      if (modulation) next[id] = modulation;
+      else delete next[id];
+      patchConfig({ modulations: next });
+    },
+    [config.modulations, patchConfig],
+  );
+
+  /** The routing props every modulatable slider needs, so they are not repeated ten times. */
+  const routed = (targetId: string) => ({
+    targetId,
+    modulations: config.modulations,
+    onModulationChange: setModulation,
+    audioEnabled: config.audio.enabled,
+  });
+
   const runBenchmark = useCallback(async (sizes: number[]): Promise<BenchmarkRow[]> => {
     const engine = engineRef.current;
     if (!engine) throw new Error('The engine is not running.');
@@ -647,7 +666,8 @@ export default function App() {
               ]}
               onChange={(bank) => patchConfig({ shallow: { ...config.shallow, bank } })}
             />
-            <Slider
+            <ModulatedSlider
+            {...routed('shallow.stepSize')}
               label="Step size"
               value={config.shallow.stepSize}
               min={0}
@@ -671,7 +691,8 @@ export default function App() {
               step={1}
               onChange={(octaves) => patchConfig({ shallow: { ...config.shallow, octaves } })}
             />
-            <Slider
+            <ModulatedSlider
+            {...routed('shallow.octaveScale')}
               label="Octave scale"
               value={config.shallow.octaveScale}
               min={1.2}
@@ -880,7 +901,8 @@ export default function App() {
             step={0.01}
             onChange={(source) => patchConfig({ feedback: { ...config.feedback, source } })}
           />
-          <Slider
+          <ModulatedSlider
+            {...routed('feedback.previous')}
             label="Previous output"
             value={config.feedback.previous}
             min={0}
@@ -888,7 +910,8 @@ export default function App() {
             step={0.01}
             onChange={(previous) => patchConfig({ feedback: { ...config.feedback, previous } })}
           />
-          <Slider
+          <ModulatedSlider
+            {...routed('feedback.zoom')}
             label="Zoom per frame"
             value={config.feedback.zoom}
             min={0.97}
@@ -897,7 +920,8 @@ export default function App() {
             onChange={(zoom) => patchConfig({ feedback: { ...config.feedback, zoom } })}
             format={(value) => `${((value - 1) * 100).toFixed(1)}%`}
           />
-          <Slider
+          <ModulatedSlider
+            {...routed('feedback.rotate')}
             label="Rotate per frame"
             value={config.feedback.rotate}
             min={-1}
@@ -922,7 +946,8 @@ export default function App() {
             step={0.001}
             onChange={(driftY) => patchConfig({ feedback: { ...config.feedback, driftY } })}
           />
-          <Slider
+          <ModulatedSlider
+            {...routed('feedback.fade')}
             label="Fade"
             value={config.feedback.fade}
             min={0.9}
@@ -939,7 +964,8 @@ export default function App() {
         </Section>
 
         <Section title="Colour" hint={config.colorPreservation > 0 ? `preserved ${config.colorPreservation.toFixed(2)}` : 'free'}>
-          <Slider
+          <ModulatedSlider
+            {...routed('colorPreservation')}
             label="Colour preservation"
             value={config.colorPreservation}
             min={0}
@@ -956,7 +982,8 @@ export default function App() {
         </Section>
 
         <Section title="Display" defaultOpen={false}>
-          <Slider
+          <ModulatedSlider
+            {...routed('display.mix')}
             label="Effect amount"
             value={config.display.mix}
             min={0}
@@ -964,7 +991,8 @@ export default function App() {
             step={0.01}
             onChange={(mix) => patchConfig({ display: { ...config.display, mix } })}
           />
-          <Slider
+          <ModulatedSlider
+            {...routed('display.gain')}
             label="Gain"
             value={config.display.gain}
             min={0.4}
@@ -978,7 +1006,8 @@ export default function App() {
             onChange={(fillScreen) => patchConfig({ fillScreen })}
             title="Shape the capture like the display and centre-crop the source into it, instead of fitting the whole frame with bars at the sides. Turned on automatically in full screen."
           />
-          <Slider
+          <ModulatedSlider
+            {...routed('display.saturation')}
             label="Saturation"
             value={config.display.saturation}
             min={0}
