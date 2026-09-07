@@ -4,7 +4,7 @@ import { GpuTensor } from '../gpu/tensor';
 import { DreamNet } from '../model/dreamnet';
 import { DEFAULT_SHALLOW_PARAMS, ShallowDream, type ShallowDreamParams } from '../model/shallowDream';
 import type { FrameSource } from './sources';
-import { AudioAnalyser, DEFAULT_BAND_ASSIGNMENTS, FREQUENCY_BANDS } from './audio';
+import { AudioAnalyser, DEFAULT_BAND_ASSIGNMENTS, FREQUENCY_BANDS, mapLevelsToControls } from './audio';
 import { getDeviceLimits } from './deviceLimits';
 import { FrameTimer, type TimingSnapshot } from './stats';
 
@@ -52,6 +52,11 @@ export interface AudioConfig {
   amount: number;
   /** Multiplier on the band level before it is clamped, for pushing quiet material into range. */
   gain: number;
+  /**
+   * How hard the assigned bands compete. At 1 the loudest reads full and the rest are pushed down a
+   * power curve, which is what makes the ratio between two bands legible rather than subtle.
+   */
+  sensitivity: number;
   /** Band index per control. Defaults put bass on the first control and the vocal range on the second. */
   assignments: number[];
 }
@@ -111,7 +116,7 @@ export const DEFAULT_CONFIG: EngineConfig = {
     fade: 0.95,
   },
   display: { mix: 1, gain: 1, saturation: 1 },
-  audio: { enabled: false, amount: 1, gain: 1.2, assignments: [...DEFAULT_BAND_ASSIGNMENTS] },
+  audio: { enabled: false, amount: 1, gain: 1.2, sensitivity: 0.7, assignments: [...DEFAULT_BAND_ASSIGNMENTS] },
   mirror: null,
   fillScreen: false,
 };
@@ -419,18 +424,14 @@ export class Engine {
    */
   private resolveControls(): number[] {
     const base = this.config.modelControls;
-    const { enabled, amount, gain, assignments } = this.config.audio;
+    const { enabled, amount, gain, sensitivity, assignments } = this.config.audio;
 
     if (!enabled || !this.audio) return base;
 
     const levels = this.audio.levels();
     this.audioLevels = Array.from(levels);
 
-    return base.map((value, index) => {
-      const band = assignments[index] ?? DEFAULT_BAND_ASSIGNMENTS[index] ?? index;
-      const level = Math.min(1, (levels[band] ?? 0) * gain);
-      return value * (1 - amount) + level * amount;
-    });
+    return mapLevelsToControls(base, levels, { assignments, gain, sensitivity, amount });
   }
 
   /** Copies this frame's output into the persistent buffer the next frame will warp and mix in. */

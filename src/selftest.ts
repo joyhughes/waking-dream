@@ -192,6 +192,7 @@ export async function runSelfTest(): Promise<CheckResult[]> {
 
     results.push(await checkParameterRoundTrip());
     results.push(await checkAudioBands());
+    results.push(await checkAudioSensitivity());
     results.push(await checkBrowserTrainerParity(ctx, ops));
 
     const exported = await checkExportedReference(ctx, ops);
@@ -777,6 +778,56 @@ async function checkAudioBands(): Promise<CheckResult> {
       detail:
         `60 Hz → ${FREQUENCY_BANDS[bassBand]?.label} [${show(bass)}], ` +
         `1 kHz → ${FREQUENCY_BANDS[vocalBand]?.label} [${show(vocal)}]`,
+    };
+  } catch (error) {
+    return { name, passed: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Checks that sensitivity does what the control claims: the loudest assigned band reaches full, and
+ * the gap between bands widens rather than merely scaling.
+ *
+ * The complaint this exists to answer is that the ratio between bass and voice was too subtle to
+ * see, so "did the numbers separate" is exactly the thing to assert on.
+ */
+async function checkAudioSensitivity(): Promise<CheckResult> {
+  const name = 'sensitivity pins the loudest band to full and opens the gap';
+  try {
+    const { mapLevelsToControls } = await import('./pipeline/audio');
+
+    // Two bands close together, which is the case that read as subtle: 0.60 against 0.48.
+    const levels = [0.6, 0, 0.48, 0, 0];
+    const mapping = { assignments: [0, 2], gain: 1, amount: 1, sensitivity: 0 };
+
+    const flat = mapLevelsToControls([0, 0], levels, mapping);
+    const keen = mapLevelsToControls([0, 0], levels, { ...mapping, sensitivity: 1 });
+
+    const ratio = (pair: number[]) => (pair[0] > 0 ? pair[1] / pair[0] : 0);
+    const problems: string[] = [];
+
+    if (Math.abs(flat[0] - 0.6) > 1e-6 || Math.abs(flat[1] - 0.48) > 1e-6) {
+      problems.push(`at 0 the levels should pass through untouched, got ${flat.map((v) => v.toFixed(3)).join(', ')}`);
+    }
+    if (Math.abs(keen[0] - 1) > 1e-6) {
+      problems.push(`at 1 the loudest should read exactly 1, got ${keen[0].toFixed(4)}`);
+    }
+    if (!(ratio(keen) < ratio(flat) - 0.1)) {
+      problems.push(`the gap did not open: ${ratio(flat).toFixed(3)} → ${ratio(keen).toFixed(3)}`);
+    }
+
+    // Near-silence must not be scaled up into a control pinned at full.
+    const quiet = mapLevelsToControls([0, 0], [0.01, 0, 0.008, 0, 0], { ...mapping, sensitivity: 1 });
+    if (quiet[0] > 0.05) problems.push(`silence was amplified to ${quiet[0].toFixed(3)}`);
+
+    return {
+      name,
+      passed: problems.length === 0,
+      detail:
+        problems.length === 0
+          ? `0.60/0.48 → ${flat.map((v) => v.toFixed(2)).join('/')} at 0, ` +
+            `${keen.map((v) => v.toFixed(2)).join('/')} at 1 (ratio ${ratio(flat).toFixed(2)} → ${ratio(keen).toFixed(2)})`
+          : problems.join('; '),
     };
   } catch (error) {
     return { name, passed: false, detail: error instanceof Error ? error.message : String(error) };

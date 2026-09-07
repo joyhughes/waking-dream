@@ -821,6 +821,15 @@ export default function App() {
                 title="Crossfade between the slider positions and the sound. 1 is fully sound-driven."
               />
               <Slider
+                label="Sensitivity"
+                value={config.audio.sensitivity}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(sensitivity) => patchConfig({ audio: { ...config.audio, sensitivity } })}
+                title="How hard the assigned bands compete. At 1 the loudest of them reads full and the others are pushed down a curve, so the gap between bass and voice is obvious rather than subtle."
+              />
+              <Slider
                 label="Gain"
                 value={config.audio.gain}
                 min={0.2}
@@ -829,6 +838,12 @@ export default function App() {
                 onChange={(gain) => patchConfig({ audio: { ...config.audio, gain } })}
                 title="Pushes quiet material up into range. Levels are already normalized per band against their own recent peak."
               />
+
+              <p className="note">
+                Every band is already normalized against its own recent peak, which is why they all
+                sit mid-range on their own — raise Sensitivity to make them compete instead, so
+                whichever is loudest reads full and the others drop away behind it.
+              </p>
 
               {modelControls.map((control, index) => (
                 <Choice

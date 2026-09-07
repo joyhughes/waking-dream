@@ -177,3 +177,62 @@ export class AudioAnalyser {
     void this.context.close();
   }
 }
+
+
+/**
+ * Below this the bands are treated as too quiet to have a winner, so silence does not get scaled up
+ * into a control pinned at full.
+ */
+const CONTRAST_FLOOR = 0.04;
+
+export interface ControlMapping {
+  /** Band index per control. */
+  assignments: number[];
+  /** Multiplier on the raw band level. Pushes quiet material into range. */
+  gain: number;
+  /**
+   * How hard the assigned bands compete with each other.
+   *
+   * At 0 each band is on its own scale, which is what makes them all sit mid-range: every band is
+   * already normalized against its own recent peak, so bass and the vocal range both read "fairly
+   * loud for themselves" almost all the time and the ratio between them barely moves.
+   *
+   * Turning this up does two things at once. The loudest of the assigned bands is scaled to exactly
+   * 1, so whichever is winning reads full — and the others are put through a rising power curve, so
+   * a band at 80% of the leader drops toward 50% rather than staying alongside it. The first part is
+   * what makes the peak reach the top; the second is what makes the gap visible.
+   */
+  sensitivity: number;
+  /** Crossfade between the slider positions and the sound. 1 is fully sound-driven. */
+  amount: number;
+}
+
+/**
+ * Turns band levels into a control vector.
+ *
+ * Pure, and separate from the engine, so the shaping can be checked against known inputs rather
+ * than inferred from watching a picture move.
+ */
+export function mapLevelsToControls(base: number[], levels: ArrayLike<number>, mapping: ControlMapping): number[] {
+  const { assignments, gain, sensitivity, amount } = mapping;
+
+  const scaled = base.map((_, index) => {
+    const band = assignments[index] ?? DEFAULT_BAND_ASSIGNMENTS[index] ?? index;
+    return Math.min(1, (levels[band] ?? 0) * gain);
+  });
+
+  let shaped = scaled;
+  const peak = scaled.reduce((most, value) => Math.max(most, value), 0);
+
+  if (sensitivity > 0 && peak > CONTRAST_FLOOR) {
+    // 1 at no sensitivity, 3 at full. A cube is enough to open a 0.8 ratio to about 0.5 without
+    // collapsing everything below the leader to zero.
+    const exponent = 1 + sensitivity * 2;
+    shaped = scaled.map((value) => {
+      const competed = Math.pow(value / peak, exponent);
+      return value * (1 - sensitivity) + competed * sensitivity;
+    });
+  }
+
+  return base.map((value, index) => value * (1 - amount) + shaped[index] * amount);
+}
