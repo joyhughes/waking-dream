@@ -83,6 +83,33 @@ export interface EngineConfig {
   captureSize: number;
   shallow: ShallowDreamParams;
   modelControls: number[];
+  /**
+   * How many resolutions a trained model is run at, and how far apart they sit.
+   *
+   * The shallow mode has had octaves from the start because it *generates* structure at run time,
+   * so running it at several scales is the natural way to get detail at several sizes. A trained
+   * model looked like it did not need them: its pattern scale was decided at training time by how
+   * large the style image was read, which is what separates pandas from pandas-big.
+   *
+   * But the same lever exists at run time. The network draws its motifs at a size fixed in its own
+   * input pixels, so feeding it a half-size frame makes everything it draws twice as large relative
+   * to the picture. Running it at two or three scales and keeping the coarse structure from one and
+   * the fine detail from another gives a single model the range that otherwise took two.
+   *
+   * 1 is a single pass, which is what it did before.
+   */
+  modelOctaves: number;
+  modelOctaveScale: number;
+  /**
+   * How much of the coarse pass's structure replaces the full-resolution pass's own.
+   *
+   * A continuous control rather than an implied all-or-nothing, and the reason is not only taste.
+   * Instance normalization makes the model's output level depend on its input resolution, so the
+   * coarse pass comes back at a different exposure — taking its low frequencies wholesale shifted
+   * the whole frame brighter. Expressed as a swap of one band for another, 0 is exactly the single
+   * pass, and how far you go from there is yours to choose.
+   */
+  modelScaleMix: number;
   feedback: FeedbackConfig;
   display: DisplayConfig;
   audio: AudioConfig;
@@ -108,6 +135,9 @@ export const DEFAULT_CONFIG: EngineConfig = {
   captureSize: getDeviceLimits().defaultCaptureSize,
   shallow: DEFAULT_SHALLOW_PARAMS,
   modelControls: [],
+  modelOctaves: 1,
+  modelOctaveScale: 2,
+  modelScaleMix: 0.6,
   feedback: {
     enabled: true,
     source: 0.7,
@@ -408,7 +438,7 @@ export class Engine {
       case 'model': {
         if (!this.model) return input;
         this.model.setControls(this.resolveControls(levels));
-        return this.model.forward(input);
+        return this.active.modelOctaves > 1 ? this.runModelOctaves(input) : this.model.forward(input);
       }
       case 'shallow':
         return this.shallow.run(input, this.active.shallow);
@@ -435,6 +465,89 @@ export class Engine {
     const preserved = this.ops.pool.acquire({ width, height, channels: 3 });
     this.ops.preserveColor(processed, captured, preserved, Math.min(1, amount));
     return preserved;
+  }
+
+  /**
+   * Runs the model at several resolutions and swaps coarse structure into the full-resolution pass.
+   *
+   * The network draws its motifs at a size fixed in its own input pixels, so a half-size frame makes
+   * everything it draws twice as large relative to the picture. That is the same lever `--style-size`
+   * pulls during training — the one separating pandas from pandas-big — available here for the cost
+   * of a second pass rather than a second model.
+   *
+   * Written as a band swap rather than a Laplacian sum. Building the frame up from the coarsest pass
+   * and adding high-pass bands is the textbook merge, and it has a defect here: instance
+   * normalization makes the model's output level depend on its input resolution, so the coarse pass
+   * returns at a different exposure and using it as the base shifted the whole frame. Replacing one
+   * band of the full-resolution result instead keeps that result's own level, and makes the strength
+   * continuous — at a mix of zero this is exactly the single pass it was before.
+   *
+   * Levels run finest to coarsest, so each swap refines a sub-band of the one before rather than
+   * overwriting it.
+   */
+  private runModelOctaves(input: GpuTensor): GpuTensor {
+    const model = this.model!;
+    const { pool } = this.ops;
+    const octaves = Math.max(1, Math.min(4, Math.round(this.active.modelOctaves)));
+    const scale = Math.max(1.2, this.active.modelOctaveScale);
+    // Split across the swaps rather than applied in full at each one. Each swap displaces the
+    // result a little further from the single pass, and at three or four octaves applying the whole
+    // mix every time compounds into a visible exposure drift. This way the control means the total
+    // amount of coarse structure, which is what someone moving it is actually asking for.
+    const swaps = Math.max(1, octaves - 1);
+    const mix = Math.max(0, Math.min(1, this.active.modelScaleMix)) / swaps;
+
+    const full = { width: input.width, height: input.height, channels: 3 };
+
+    // Multiples of eight: the network halves its resolution twice and doubles it back, and an odd
+    // size returns a frame a pixel or two off the one it was given.
+    const sizeAt = (level: number) => {
+      const factor = Math.pow(scale, level);
+      return {
+        width: Math.max(32, Math.round(input.width / factor / 8) * 8),
+        height: Math.max(32, Math.round(input.height / factor / 8) * 8),
+      };
+    };
+
+    let result = model.forward(input);
+
+    for (let level = 1; level < octaves && mix > 0; level++) {
+      const size = sizeAt(level);
+
+      const levelInput = pool.acquire({ ...size, channels: 3 });
+      this.ops.resize(input, levelInput, 'linear');
+      const dreamed = model.forward(levelInput);
+
+      // This level's contribution, at full size. It carries nothing finer than its own resolution,
+      // so upsampling it *is* its low band — no separate low-pass needed on this side.
+      const coarse = pool.acquire(full);
+      this.ops.resize(dreamed, coarse, 'linear');
+      pool.release(levelInput);
+
+      // The band of the current result that is about to be replaced.
+      const small = pool.acquire({ ...size, channels: 3 });
+      this.ops.resize(result, small, 'linear');
+      const lowOfResult = pool.acquire(full);
+      this.ops.resize(small, lowOfResult, 'linear');
+      pool.release(small);
+
+      const merged = pool.acquire(full);
+      this.ops.combine(
+        merged,
+        [
+          { tensor: result, weight: 1 },
+          { tensor: coarse, weight: mix },
+          { tensor: lowOfResult, weight: -mix },
+        ],
+        { clamp: 'soft' },
+      );
+
+      pool.release(lowOfResult);
+      pool.release(coarse);
+      result = merged;
+    }
+
+    return result;
   }
 
   /**

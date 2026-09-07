@@ -106,6 +106,17 @@ export const MODULATION_TARGETS: ModulationTarget[] = [
     write: (config, value) => ({ ...config, display: { ...config.display, saturation: value } }),
   },
   {
+    // The octave *count* and *scale* are deliberately absent: both change the size of every buffer
+    // a frame allocates, and sweeping them from a bass drum would thrash the tensor pool. How much
+    // of the coarse pass shows through changes no sizes at all, so it routes freely.
+    id: 'model.scaleMix',
+    label: 'Coarse structure',
+    min: 0,
+    max: 1,
+    read: (config) => config.modelScaleMix,
+    write: (config, value) => ({ ...config, modelScaleMix: value }),
+  },
+  {
     id: 'shallow.stepSize',
     label: 'Step size',
     min: 0,

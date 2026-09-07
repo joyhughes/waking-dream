@@ -758,6 +758,50 @@ export default function App() {
           </Section>
         ) : null}
 
+        {config.processor === 'model' && modelInfo ? (
+          <Section title="Model scale" hint={config.modelOctaves > 1 ? `${config.modelOctaves} octaves` : 'single pass'}>
+            <Slider
+              label="Octaves"
+              value={config.modelOctaves}
+              min={1}
+              max={4}
+              step={1}
+              onChange={(modelOctaves) => patchConfig({ modelOctaves })}
+              title="Runs the model at several resolutions and keeps the coarse structure from one and the fine detail from another. 1 is a single pass."
+            />
+            {config.modelOctaves > 1 ? (
+              <ModulatedSlider
+                {...routed('model.scaleMix')}
+                label="Coarse structure"
+                value={config.modelScaleMix}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(modelScaleMix) => patchConfig({ modelScaleMix })}
+                title="How much of the coarse pass's structure replaces the full-resolution pass's own. 0 is exactly the single pass."
+              />
+            ) : null}
+            {config.modelOctaves > 1 ? (
+              <Slider
+                label="Octave scale"
+                value={config.modelOctaveScale}
+                min={1.4}
+                max={3}
+                step={0.1}
+                onChange={(modelOctaveScale) => patchConfig({ modelOctaveScale })}
+                title="How far apart the resolutions sit. Larger means the coarse pass draws much bigger motifs."
+              />
+            ) : null}
+            <p className="note">
+              A model draws its motifs at a size fixed in its own input pixels, so a half-size frame
+              makes everything it draws twice as large. That is the same lever <code>--style-size</code>
+              pulls during training — which is what separates pandas from pandas-big — except here it
+              costs a second pass instead of a second model. Each extra octave adds about a quarter
+              of a frame at scale 2.
+            </p>
+          </Section>
+        ) : null}
+
         {config.processor === 'model' && modelControls.length > 0 ? (
           <Section title="Model controls" hint="conditioned">
             {modelControls.map((control, index) => (

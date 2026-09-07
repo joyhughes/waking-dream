@@ -43,6 +43,8 @@ export function TrainPanel({ getSource, onUseModel, onSavedModelsChanged, onBusy
   const [styles, setStyles] = useState<StyleInput[]>([]);
   const [frames, setFrames] = useState<HTMLCanvasElement[]>([]);
   const [modelName, setModelName] = useState('my-style');
+  const [frameCount, setFrameCount] = useState(24);
+  const [frameSpacing, setFrameSpacing] = useState(0.5);
 
   const [progress, setProgress] = useState<TrainingProgress | null>(null);
   const [result, setResult] = useState<TrainingResult | null>(null);
@@ -105,14 +107,14 @@ export function TrainPanel({ getSource, onUseModel, onSavedModelsChanged, onBusy
     setError(null);
     setBusy(true);
     try {
-      const captured = await loaded.captureFromSource(source, loaded.DEFAULT_FRAME_COUNT);
+      const captured = await loaded.captureFromSource(source, frameCount, Math.round(frameSpacing * 1000));
       setFrames((previous) => [...previous, ...captured]);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setBusy(false);
     }
-  }, [getSource]);
+  }, [getSource, frameCount, frameSpacing]);
 
   const addContentFiles = useCallback(async (files: File[]) => {
     const loaded = await loadTrainModule();
@@ -237,9 +239,27 @@ export function TrainPanel({ getSource, onUseModel, onSavedModelsChanged, onBusy
         </p>
       )}
 
+      <Slider
+        label="Frames to capture"
+        value={frameCount}
+        min={4}
+        max={120}
+        step={4}
+        onChange={setFrameCount}
+      />
+      <Slider
+        label="Seconds between frames"
+        value={frameSpacing}
+        min={0.1}
+        max={3}
+        step={0.1}
+        onChange={setFrameSpacing}
+        format={(value) => `${value.toFixed(1)}s`}
+        title="Spread the grabs out so the frames are genuinely different scenes rather than one moment sampled repeatedly."
+      />
       <ButtonRow>
         <button className="button" onClick={() => void captureFrames()} disabled={busy}>
-          Capture frames from source
+          {busy ? 'Capturing…' : `Capture ${frameCount} frames (${Math.round(frameCount * frameSpacing)}s)`}
         </button>
         <FileButton label="Add photos…" accept="image/*" multiple onFiles={(files) => void addContentFiles(files)} />
         {frames.length > 0 ? (
