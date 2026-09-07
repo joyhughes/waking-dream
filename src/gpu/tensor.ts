@@ -231,6 +231,19 @@ export class TensorPool {
     return tensor;
   }
 
+  /** How many buffers exist right now, split by whether a frame is using them. A rising `free`
+   *  bucket count with a flat `live` one is churn; a rising `live` count is a leak. */
+  get census(): { live: number; free: number; buckets: number } {
+    let free = 0;
+    for (const bucket of this.free.values()) free += bucket.tensors.length;
+    return { live: this.live.length, free, buckets: this.free.size };
+  }
+
+  /** The ceiling this pool evicts against, so the UI can say how close a configuration is to it. */
+  get budget(): number {
+    return this.budgetBytes;
+  }
+
   get bytesHeld(): number {
     let total = this.freeBytes;
     for (const tensor of this.live) total += tensor.byteLength;

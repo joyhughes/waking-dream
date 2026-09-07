@@ -203,6 +203,7 @@ body {
 }
 
 .section > summary {
+  position: relative;
   cursor: pointer;
   display: flex;
   justify-content: space-between;
@@ -240,6 +241,7 @@ body {
 }
 
 .control {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -281,6 +283,7 @@ select {
 }
 
 .button-row {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -659,4 +662,69 @@ select {
 .routing-clear:hover {
   color: var(--accent);
   opacity: 1;
+}
+
+/* Hints ------------------------------------------------------------------------------------ */
+
+.hint {
+  display: inline-grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  margin-left: 5px;
+  border-radius: 50%;
+  border: 1px solid var(--panel-edge);
+  color: var(--dim);
+  font-size: 9px;
+  font-style: italic;
+  font-family: Georgia, serif;
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+  user-select: none;
+}
+
+.hint:hover,
+.hint:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: none;
+}
+
+/*
+ * Anchored to the control rather than to the icon.
+ *
+ * The panel scrolls on the y axis, which per spec makes it clip on x as well, so a bubble hung off
+ * the icon spills out of sight whenever the icon sits near the right edge. Spanning the width of
+ * the row it belongs to cannot overflow at all, and reads better besides — the explanation lines up
+ * under the thing it explains instead of floating beside it.
+ */
+.hint-bubble {
+  display: none;
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  right: 0;
+  padding: 7px 9px;
+  border-radius: 5px;
+  border: 1px solid var(--panel-edge);
+  background: #12141b;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+  color: var(--text);
+  font: 11.5px/1.45 ui-sans-serif, -apple-system, system-ui, sans-serif;
+  font-style: normal;
+  text-align: left;
+  white-space: normal;
+  z-index: 6;
+}
+
+.hint:hover .hint-bubble,
+.hint:focus .hint-bubble,
+.hint:focus-within .hint-bubble {
+  display: block;
+}
+
+.hint-bubble code {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: var(--accent);
 }

@@ -181,6 +181,12 @@ export interface EngineStatus {
   timing: TimingSnapshot;
   supportsGpuTiming: boolean;
   poolMegabytes: number;
+  /** What the pool evicts against. Sitting at it is not a leak, but it does mean churn every frame. */
+  poolBudgetMegabytes: number;
+  /** Reduction scratch, which is cached by size and so grows with how many distinct sizes a frame uses. */
+  scratchMegabytes: number;
+  /** Buffer counts. A climbing `live` count across frames is a leak; a climbing `free` count is not. */
+  census: { live: number; free: number; buckets: number };
   programCount: number;
   renderer: string;
   modelName: string | null;
@@ -523,6 +529,11 @@ export class Engine {
       const coarse = pool.acquire(full);
       this.ops.resize(dreamed, coarse, 'linear');
       pool.release(levelInput);
+      // Handed back as soon as it has been resampled. Each level's output is a full feature-map
+      // stack at its own resolution, and holding all of them to the end of the frame multiplies
+      // peak texture memory by the octave count for no reason — which at a large capture size with
+      // a wide model is the difference between fitting the pool budget and thrashing it.
+      pool.release(dreamed);
 
       // The band of the current result that is about to be replaced.
       const small = pool.acquire({ ...size, channels: 3 });
@@ -544,7 +555,11 @@ export class Engine {
 
       pool.release(lowOfResult);
       pool.release(coarse);
+
+      const previous = result;
       result = merged;
+      // The combine has already been issued, so the old result is finished with.
+      pool.release(previous);
     }
 
     return result;
@@ -732,6 +747,9 @@ export class Engine {
       timing: this.timer.snapshot(),
       supportsGpuTiming: this.timer.supportsGpuTiming,
       poolMegabytes: this.ops.pool.bytesHeld / (1024 * 1024),
+      poolBudgetMegabytes: this.ops.pool.budget / (1024 * 1024),
+      scratchMegabytes: this.ops.scratchMegabytes,
+      census: this.ops.pool.census,
       programCount: this.ops.programCount,
       renderer: this.ctx.caps.rendererName,
       modelName: this.model?.name ?? null,

@@ -10,7 +10,7 @@ import type {
   TrainingProgress,
   TrainingResult,
 } from '../train';
-import { ButtonRow, Choice, FileButton, Slider } from './Controls';
+import { ButtonRow, Choice, FileButton, Hint, Slider } from './Controls';
 
 /**
  * Train a style model in the page.
@@ -226,18 +226,14 @@ export function TrainPanel({ getSource, onUseModel, onSavedModelsChanged, onBusy
 
       <ButtonRow>
         <FileButton label="Style images…" accept="image/*" multiple onFiles={(files) => void addStyles(files)} />
+        <Hint text="Pick images with texture all over rather than an interesting composition — the network learns which strokes and colours go together and throws away where they were. Each image becomes its own slider, and the sliders blend." />
         {styles.length > 0 ? (
           <button className="button small" onClick={() => setStyles([])} disabled={busy}>Clear</button>
         ) : null}
       </ButtonRow>
       {styles.length > 0 ? (
         <p className="note">{styles.length} style{styles.length === 1 ? '' : 's'}: {styles.map((style) => style.name).join(', ')} — each gets its own slider, and they blend.</p>
-      ) : (
-        <p className="note">
-          Pick images with texture all over rather than an interesting composition — the network
-          learns which strokes and colours go together, and throws away where they were.
-        </p>
-      )}
+      ) : null}
 
       <Slider
         label="Frames to capture"
@@ -262,18 +258,16 @@ export function TrainPanel({ getSource, onUseModel, onSavedModelsChanged, onBusy
           {busy ? 'Capturing…' : `Capture ${frameCount} frames (${Math.round(frameCount * frameSpacing)}s)`}
         </button>
         <FileButton label="Add photos…" accept="image/*" multiple onFiles={(files) => void addContentFiles(files)} />
+        <Hint text="Content frames are only things the network must keep recognisable while repainting them — the look comes entirely from the style images. Capturing from your own camera means it sees the lighting it will actually run in. Three to five hundred varied frames is the comfortable range." />
         {frames.length > 0 ? (
           <button className="button small" onClick={() => setFrames([])} disabled={busy}>Clear</button>
         ) : null}
       </ButtonRow>
-      <p className="note">
-        {frames.length > 0
-          ? `${frames.length} content frames. These are only things to keep recognisable while repainting — the look comes entirely from the styles.`
-          : 'Content frames are what gets repainted during training. Capturing from your own camera means the network sees the lighting it will actually run in.'}
-      </p>
+      {frames.length > 0 ? <p className="note">{frames.length} content frames.</p> : null}
 
       <Choice<FeatureNetworkId>
         label="Feature network"
+        info={networks.map((network) => `${network.label}: ${network.description}`).join(' ')}
         value={config.featureNetwork}
         options={networks.map((network) => ({
           value: network.id,
@@ -281,7 +275,7 @@ export function TrainPanel({ getSource, onUseModel, onSavedModelsChanged, onBusy
         }))}
         onChange={(featureNetwork) => patch({ featureNetwork })}
       />
-      <p className="note">{networks.find((network) => network.id === config.featureNetwork)?.description}</p>
+
 
       <Slider
         label="Iterations"
@@ -406,9 +400,8 @@ export function TrainPanel({ getSource, onUseModel, onSavedModelsChanged, onBusy
             </button>
           </ButtonRow>
           <p className="note">
-            The downloaded file is the whole model. Send it to someone and they can open it with
-            <em> Load .dnw model…</em>; drop it in <code>public/models/</code> and run
-            <code> pnpm models:index</code> to ship it with the deployed build.
+            The downloaded file is the whole model.
+            <Hint text="Send it to someone and they can open it with Load .dnw model…; drop it in public/models/ and run pnpm models:index to ship it with the deployed build." />
           </p>
         </>
       ) : null}

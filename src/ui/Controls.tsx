@@ -9,9 +9,28 @@ import type { Modulation, ModulationMap } from '../pipeline/modulation';
  * just made — "that got better" is not usable without "at 0.42".
  */
 
-export function Section({ title, hint, children, defaultOpen = true, lazy = false }: {
+/**
+ * An explanation that stays out of the way until asked for.
+ *
+ * These used to sit under their controls as paragraphs, which made the panel long enough that
+ * reaching a control meant scrolling past the reasons for the ones above it — and the reasons are
+ * worth reading once, not on every pass. Opens on hover and on focus, so it is reachable by tap and
+ * by keyboard rather than by pointer alone.
+ */
+export function Hint({ text }: { text: string }) {
+  return (
+    <span className="hint" tabIndex={0} role="note" aria-label={text}>
+      <span aria-hidden="true">i</span>
+      <span className="hint-bubble">{text}</span>
+    </span>
+  );
+}
+
+export function Section({ title, hint, info, children, defaultOpen = true, lazy = false }: {
   title: string;
   hint?: string;
+  /** Explanation of what the whole section is for, shown on the ⓘ next to its title. */
+  info?: string;
   children: ReactNode;
   defaultOpen?: boolean;
   /**
@@ -30,7 +49,10 @@ export function Section({ title, hint, children, defaultOpen = true, lazy = fals
       if ((event.currentTarget as HTMLDetailsElement).open) setOpened(true);
     }}>
       <summary>
-        <span className="section-title">{title}</span>
+        <span className="section-title">
+          {title}
+          {info ? <Hint text={info} /> : null}
+        </span>
         {hint ? <span className="section-hint">{hint}</span> : null}
       </summary>
       <div className="section-body">{!lazy || opened ? children : null}</div>
@@ -38,7 +60,7 @@ export function Section({ title, hint, children, defaultOpen = true, lazy = fals
   );
 }
 
-export function Slider({ label, value, min, max, step, onChange, format, title }: {
+export function Slider({ label, value, min, max, step, onChange, format, title, info }: {
   label: string;
   value: number;
   min: number;
@@ -47,11 +69,16 @@ export function Slider({ label, value, min, max, step, onChange, format, title }
   onChange: (value: number) => void;
   format?: (value: number) => string;
   title?: string;
+  /** Longer explanation, on a ⓘ beside the label. `title` stays for one-line hover text. */
+  info?: string;
 }) {
   return (
     <label className="control" title={title}>
       <span className="control-label">
-        {label}
+        <span>
+          {label}
+          {info ? <Hint text={info} /> : null}
+        </span>
         <span className="control-value">{format ? format(value) : value.toFixed(stepDecimals(step))}</span>
       </span>
       <input
@@ -85,15 +112,21 @@ export function Toggle({ label, checked, onChange, title }: {
   );
 }
 
-export function Choice<T extends string>({ label, value, options, onChange }: {
+export function Choice<T extends string>({ label, value, options, onChange, info }: {
   label: string;
   value: T;
   options: { value: T; label: string; disabled?: boolean }[];
   onChange: (value: T) => void;
+  info?: string;
 }) {
   return (
     <label className="control">
-      <span className="control-label">{label}</span>
+      <span className="control-label">
+        <span>
+          {label}
+          {info ? <Hint text={info} /> : null}
+        </span>
+      </span>
       <select value={value} onChange={(event) => onChange(event.target.value as T)}>
         {options.map((option) => (
           <option key={option.value} value={option.value} disabled={option.disabled}>

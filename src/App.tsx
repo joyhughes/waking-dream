@@ -759,7 +759,11 @@ export default function App() {
         ) : null}
 
         {config.processor === 'model' && modelInfo ? (
-          <Section title="Model scale" hint={config.modelOctaves > 1 ? `${config.modelOctaves} octaves` : 'single pass'}>
+          <Section
+            title="Model scale"
+            hint={config.modelOctaves > 1 ? `${config.modelOctaves} octaves` : 'single pass'}
+            info="A model draws its motifs at a size fixed in its own input pixels, so a half-size frame makes everything it draws twice as large. That is the same lever --style-size pulls during training — what separates pandas from pandas-big — except here it costs a second pass instead of a second model. Each extra octave adds about a quarter of a frame at scale 2."
+          >
             <Slider
               label="Octaves"
               value={config.modelOctaves}
@@ -792,13 +796,6 @@ export default function App() {
                 title="How far apart the resolutions sit. Larger means the coarse pass draws much bigger motifs."
               />
             ) : null}
-            <p className="note">
-              A model draws its motifs at a size fixed in its own input pixels, so a half-size frame
-              makes everything it draws twice as large. That is the same lever <code>--style-size</code>
-              pulls during training — which is what separates pandas from pandas-big — except here it
-              costs a second pass instead of a second model. Each extra octave adds about a quarter
-              of a frame at scale 2.
-            </p>
           </Section>
         ) : null}
 
@@ -887,6 +884,7 @@ export default function App() {
               />
               <Slider
                 label="Sensitivity"
+                info="Every band is already normalized against its own recent peak, which is why they all sit mid-range on their own. Raise this to make them compete instead: whichever is loudest reads full and the others drop away behind it."
                 value={config.audio.sensitivity}
                 min={0}
                 max={1}
@@ -903,12 +901,6 @@ export default function App() {
                 onChange={(gain) => patchConfig({ audio: { ...config.audio, gain } })}
                 title="Pushes quiet material up into range. Levels are already normalized per band against their own recent peak."
               />
-
-              <p className="note">
-                Every band is already normalized against its own recent peak, which is why they all
-                sit mid-range on their own — raise Sensitivity to make them compete instead, so
-                whichever is loudest reads full and the others drop away behind it.
-              </p>
 
               {modelControls.map((control, index) => (
                 <Choice
@@ -1007,7 +999,11 @@ export default function App() {
           </ButtonRow>
         </Section>
 
-        <Section title="Colour" hint={config.colorPreservation > 0 ? `preserved ${config.colorPreservation.toFixed(2)}` : 'free'}>
+        <Section
+          title="Colour"
+          hint={config.colorPreservation > 0 ? `preserved ${config.colorPreservation.toFixed(2)}` : 'free'}
+          info="Brightness is where the drawn structure lives, so it is never touched. At 1 the frame keeps the camera's colours exactly and every hallucinated form survives as light and shade within them. Applied before the feedback loop, so the recursion is held too."
+        >
           <ModulatedSlider
             {...routed('colorPreservation')}
             label="Colour preservation"
@@ -1018,11 +1014,6 @@ export default function App() {
             onChange={(colorPreservation) => patchConfig({ colorPreservation })}
             title="Pulls hue and saturation back toward the source frame, leaving brightness — and so the drawn structure — alone. At 1 the camera's colours are kept exactly."
           />
-          <p className="note">
-            Brightness is where the drawn structure lives, so it is never touched. At 1 the frame
-            keeps the camera's colours exactly and every hallucinated form survives as light and
-            shade within them. Applied before the feedback loop, so the recursion is held too.
-          </p>
         </Section>
 
         <Section title="Display" defaultOpen={false}>
@@ -1061,7 +1052,11 @@ export default function App() {
           />
         </Section>
 
-        <Section title="Capture" defaultOpen={false}>
+        <Section
+          title="Capture"
+          defaultOpen={false}
+          info="Saved frames are PNGs with the full settings written into them, so a frame is a way back to the look that made it — reopen one here, or send it to someone else. Recordings are H.264 MP4 wherever the browser can manage it, which is what QuickTime and Photos open."
+        >
           <ButtonRow>
             <button
               className={`button ${recording ? 'recording' : ''}`}
@@ -1100,11 +1095,6 @@ export default function App() {
               }}
             />
           </ButtonRow>
-          <p className="note">
-            Saved frames are PNGs with the full settings written into them, so a frame is a way back
-            to the look that made it — reopen one here, or send it to someone else. Recordings are
-            H.264 MP4 wherever the browser can manage it, which is what QuickTime and Photos open.
-          </p>
           {!CanvasRecorder.supported ? <p className="note">This browser cannot record canvas video.</p> : null}
         </Section>
 
@@ -1149,7 +1139,17 @@ export default function App() {
         <footer className="panel-footer">
           <div>{status?.renderer ?? ''}</div>
           <div className="dim">
-            {status ? `${status.programCount} shaders · ${status.poolMegabytes.toFixed(1)} MB textures` : ''}
+            {status ? (
+              <>
+                {status.programCount} shaders ·{' '}
+                <span className={status.poolMegabytes > status.poolBudgetMegabytes * 0.85 ? 'slow' : undefined}>
+                  {status.poolMegabytes.toFixed(0)}/{status.poolBudgetMegabytes.toFixed(0)} MB textures
+                </span>
+                {status.poolMegabytes > status.poolBudgetMegabytes * 0.85
+                  ? ' — near the ceiling; drop capture size or octaves'
+                  : ''}
+              </>
+            ) : null}
             {status && !status.supportsGpuTiming ? ' · no GPU timer' : ''}
           </div>
         </footer>

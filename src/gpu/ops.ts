@@ -313,6 +313,10 @@ export class Ops {
     return this.scratchBytes / (1024 * 1024);
   }
 
+  get scratchCount(): number {
+    return this.scratch2D.size;
+  }
+
   /** Resamples one channel group. The network only ever upsamples RGB-width or feature-width group 0..n. */
   resize(input: GpuTensor, output: GpuTensor, filter: 'nearest' | 'linear' = 'linear'): void {
     const program = this.programs.get(resizeShader(filter));

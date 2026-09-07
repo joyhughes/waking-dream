@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { BenchmarkRow, ModelBenchmarkRow } from '../pipeline/engine';
+import { Hint } from './Controls';
 
 /**
  * The size/speed sweep.
@@ -55,6 +56,7 @@ export function BenchmarkPanel({ onRun, onCompareModels }: {
         <button className="button" onClick={run} disabled={busy}>
           {busy ? 'Measuring…' : 'Sweep capture sizes'}
         </button>
+        <Hint text="Each frame is measured with the GPU forced to finish, so these run a little pessimistic against the live counter, which overlaps frames. The shape of the curve is what to read." />
         {onCompareModels ? (
           <button className="button" onClick={compare} disabled={busy}>
             Compare models
@@ -111,12 +113,7 @@ export function BenchmarkPanel({ onRun, onCompareModels }: {
         </table>
       ) : null}
 
-      {rows.length > 0 || models.length > 0 ? (
-        <p className="note">
-          Each frame is measured with the GPU forced to finish, so these run a little pessimistic
-          against the live counter, which overlaps frames.
-        </p>
-      ) : null}
+
     </div>
   );
 }
