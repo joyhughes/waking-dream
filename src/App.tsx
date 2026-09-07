@@ -893,14 +893,43 @@ export default function App() {
                 title="How hard the assigned bands compete. At 1 the loudest of them reads full and the others are pushed down a curve, so the gap between bass and voice is obvious rather than subtle."
               />
               <Slider
-                label="Gain"
-                value={config.audio.gain}
-                min={0.2}
-                max={4}
+                label="Onset boost"
+                info="How much of a band's movement comes from how fast it is rising rather than how loud it is. At 0 a control follows level, like a volume pedal. Turned up it follows attacks, so a kick reads as a hit rather than as sustained loudness — a band can be quiet and still spike hard when it arrives."
+                value={config.audio.onsetBoost}
+                min={0}
+                max={2}
                 step={0.05}
-                onChange={(gain) => patchConfig({ audio: { ...config.audio, gain } })}
-                title="Pushes quiet material up into range. Levels are already normalized per band against their own recent peak."
+                onChange={(onsetBoost) => patchConfig({ audio: { ...config.audio, onsetBoost } })}
               />
+              <Slider
+                label="Leader bonus"
+                info="Pushes whichever control is already ahead further ahead, by a share of the distance it has left to the top. Separate from Sensitivity: that reshapes the whole set against its peak, this rewards the winner for winning, which is what makes one texture clearly take the frame on a hit."
+                value={config.audio.leaderBonus}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(leaderBonus) => patchConfig({ audio: { ...config.audio, leaderBonus } })}
+              />
+
+              <div className="band-gains">
+                <span className="control-label">Band gain</span>
+                {FREQUENCY_BANDS.map((band, index) => (
+                  <Slider
+                    key={band.name}
+                    label={band.label}
+                    value={config.audio.gains[index] ?? 1}
+                    min={0}
+                    max={4}
+                    step={0.05}
+                    onChange={(value) => {
+                      const gains = FREQUENCY_BANDS.map((_, i) => config.audio.gains[i] ?? 1);
+                      gains[index] = value;
+                      patchConfig({ audio: { ...config.audio, gains } });
+                    }}
+                    format={(value) => `${value.toFixed(2)}×`}
+                  />
+                ))}
+              </div>
 
               {modelControls.map((control, index) => (
                 <Choice

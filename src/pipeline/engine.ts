@@ -4,7 +4,7 @@ import { GpuTensor } from '../gpu/tensor';
 import { DreamNet } from '../model/dreamnet';
 import { DEFAULT_SHALLOW_PARAMS, ShallowDream, type ShallowDreamParams } from '../model/shallowDream';
 import type { FrameSource } from './sources';
-import { AudioAnalyser, DEFAULT_BAND_ASSIGNMENTS, FREQUENCY_BANDS, mapLevelsToControls } from './audio';
+import { AudioAnalyser, DEFAULT_BAND_ASSIGNMENTS, FREQUENCY_BANDS, bandActivations, mapLevelsToControls } from './audio';
 import { getDeviceLimits } from './deviceLimits';
 import { applyModulations, type ModulationMap } from './modulation';
 import { FrameTimer, type TimingSnapshot } from './stats';
@@ -51,8 +51,18 @@ export interface AudioConfig {
   enabled: boolean;
   /** Crossfade between the slider value and the band level. 1 is fully sound-driven. */
   amount: number;
-  /** Multiplier on the band level before it is clamped, for pushing quiet material into range. */
-  gain: number;
+  /**
+   * Multiplier per band, in `FREQUENCY_BANDS` order.
+   *
+   * Per band rather than one master, because the bands do not arrive on equal footing in real
+   * music: a mix with a loud kick and a quiet hi-hat needs them scaled differently before any of
+   * the competition downstream means anything, and one multiplier can only move all five together.
+   */
+  gains: number[];
+  /** How much of each band's movement comes from its rate of change rather than its level. */
+  onsetBoost: number;
+  /** How far the leading control is pushed further ahead, as a share of its remaining distance to 1. */
+  leaderBonus: number;
   /**
    * How hard the assigned bands compete. At 1 the loudest reads full and the rest are pushed down a
    * power curve, which is what makes the ratio between two bands legible rather than subtle.
@@ -149,7 +159,15 @@ export const DEFAULT_CONFIG: EngineConfig = {
     fade: 0.95,
   },
   display: { mix: 1, gain: 1, saturation: 1 },
-  audio: { enabled: false, amount: 1, gain: 1.2, sensitivity: 0.7, assignments: [...DEFAULT_BAND_ASSIGNMENTS] },
+  audio: {
+    enabled: false,
+    amount: 1,
+    gains: FREQUENCY_BANDS.map(() => 1.2),
+    onsetBoost: 0.8,
+    leaderBonus: 0.3,
+    sensitivity: 0.7,
+    assignments: [...DEFAULT_BAND_ASSIGNMENTS],
+  },
   modulations: {},
   mirror: null,
   fillScreen: false,
@@ -226,6 +244,7 @@ export class Engine {
   private audio: AudioAnalyser | null = null;
   /** Last read band levels, kept so the meter can be drawn without a second analyser pass. */
   private audioLevels: number[] = new Array(FREQUENCY_BANDS.length).fill(0);
+  private bandActivations: number[] = new Array(FREQUENCY_BANDS.length).fill(0);
   /**
    * What this frame is actually running: the config with any sound routings applied.
    *
@@ -297,7 +316,10 @@ export class Engine {
   setAudio(analyser: AudioAnalyser | null): void {
     this.audio?.stop();
     this.audio = analyser;
-    if (!analyser) this.audioLevels = new Array(FREQUENCY_BANDS.length).fill(0);
+    if (!analyser) {
+      this.audioLevels = new Array(FREQUENCY_BANDS.length).fill(0);
+      this.bandActivations = new Array(FREQUENCY_BANDS.length).fill(0);
+    }
   }
 
   get currentAudio(): AudioAnalyser | null {
@@ -389,11 +411,22 @@ export class Engine {
 
     // Read once per frame. The analyser advances its own attack and release on every call, so
     // asking twice would run the envelopes at double speed.
-    const levels =
-      this.config.audio.enabled && this.audio ? this.audio.levels() : null;
-    if (levels) this.audioLevels = Array.from(levels);
+    const levels = this.config.audio.enabled && this.audio ? this.audio.levels() : null;
+    if (levels && this.audio) {
+      // Computed once and kept: the controls need it, the sound routings need it, and the meters
+      // show it — and it is what is actually driving things, rather than the raw level underneath.
+      this.bandActivations = bandActivations(
+        levels,
+        this.audio.onsetLevels(),
+        this.config.audio.gains,
+        this.config.audio.onsetBoost,
+      );
+      this.audioLevels = this.bandActivations;
+    }
 
-    this.active = levels ? applyModulations(this.config, levels, this.config.modulations) : this.config;
+    this.active = levels
+      ? applyModulations(this.config, this.bandActivations, this.config.modulations)
+      : this.config;
 
     const { width, height } = this.captureDimensions(source);
     this.captureWidth = width;
@@ -573,11 +606,11 @@ export class Engine {
    */
   private resolveControls(levels: ArrayLike<number> | null): number[] {
     const base = this.active.modelControls;
-    const { enabled, amount, gain, sensitivity, assignments } = this.active.audio;
+    const { enabled, amount, sensitivity, assignments } = this.active.audio;
 
     if (!enabled || !levels) return base;
 
-    return mapLevelsToControls(base, levels, { assignments, gain, sensitivity, amount });
+    return mapLevelsToControls(base, this.bandActivations, { assignments, sensitivity, amount, leaderBonus: this.active.audio.leaderBonus });
   }
 
   /** Copies this frame's output into the persistent buffer the next frame will warp and mix in. */

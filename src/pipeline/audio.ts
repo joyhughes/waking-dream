@@ -37,9 +37,16 @@ export const FREQUENCY_BANDS: FrequencyBand[] = [
  */
 export const DEFAULT_BAND_ASSIGNMENTS = [0, 2, 3, 1, 4];
 
-/** Rise fast, fall slowly. A meter that falls as fast as it rises reads as flicker, not as rhythm. */
-const ATTACK = 0.55;
-const RELEASE = 0.12;
+/**
+ * Rise almost instantly, fall quickly but not as fast.
+ *
+ * Deliberately much less smoothing than before. Smoothing is what makes a meter pleasant to look at
+ * and what makes a control feel late — every stage of it puts the picture further behind the beat,
+ * and three stages (the analyser's own, the attack, the release) had it lagging visibly. What is
+ * left is the minimum that stops a control chattering between adjacent frames.
+ */
+const ATTACK = 0.85;
+const RELEASE = 0.25;
 
 /** How quickly the running peak decays, per frame. Sets how fast the gain re-adapts after a loud passage. */
 const PEAK_DECAY = 0.999;
@@ -58,6 +65,15 @@ const NOISE_FLOOR = 0.01;
  */
 const PEAK_WEIGHT = 0.65;
 
+/** Turns a per-frame change into something on the same scale as a level. */
+const ONSET_SCALE = 3;
+
+/** How fast an onset spike falls away once the rise stops. */
+const ONSET_DECAY = 0.72;
+
+/** The frame time the onset scale is defined against, so the derivative is per second not per frame. */
+const REFERENCE_FRAME_MS = 1000 / 60;
+
 export class AudioAnalyser {
   private readonly context: AudioContext;
   private readonly analyser: AnalyserNode;
@@ -66,6 +82,11 @@ export class AudioAnalyser {
   private readonly spectrum: Uint8Array;
   private readonly smoothed: Float32Array;
   private readonly peaks: Float32Array;
+  /** Previous frame's normalized level per band, for the derivative. */
+  private readonly previous: Float32Array;
+  /** Smoothed positive rate of change per band — how hard each band is *arriving*, not how loud it is. */
+  private readonly onsets: Float32Array;
+  private lastReadAt = 0;
   readonly label: string;
 
   private constructor(context: AudioContext, analyser: AnalyserNode, stream: MediaStream, ownsStream: boolean, label: string) {
@@ -77,6 +98,8 @@ export class AudioAnalyser {
     this.spectrum = new Uint8Array(analyser.frequencyBinCount);
     this.smoothed = new Float32Array(FREQUENCY_BANDS.length);
     this.peaks = new Float32Array(FREQUENCY_BANDS.length).fill(NOISE_FLOOR);
+    this.previous = new Float32Array(FREQUENCY_BANDS.length);
+    this.onsets = new Float32Array(FREQUENCY_BANDS.length);
   }
 
   /**
@@ -113,9 +136,10 @@ export class AudioAnalyser {
 
     const analyser = context.createAnalyser();
     analyser.fftSize = 2048;
-    // Some smoothing in the analyser itself, and the rest in the attack/release below. Doing it all
-    // here would make every band equally sluggish, including the transients worth reacting to.
-    analyser.smoothingTimeConstant = 0.5;
+    // Low, because everything downstream of it is also smoothing. The transients are the useful
+    // part of a drum hit; averaging them into the neighbouring frames is exactly what loses the
+    // rhythm the controls are supposed to be following.
+    analyser.smoothingTimeConstant = 0.15;
 
     context.createMediaStreamSource(stream).connect(analyser);
 
@@ -143,6 +167,13 @@ export class AudioAnalyser {
   levels(): Float32Array {
     this.analyser.getByteFrequencyData(this.spectrum);
 
+    // The derivative is per unit time, not per frame: without this a 30 fps machine would read
+    // every onset as twice the size of the same music on a 60 fps one.
+    const now = performance.now();
+    const elapsed = this.lastReadAt > 0 ? now - this.lastReadAt : REFERENCE_FRAME_MS;
+    this.lastReadAt = now;
+    const frameScale = Math.min(4, REFERENCE_FRAME_MS / Math.max(1, elapsed));
+
     const binHz = this.context.sampleRate / this.analyser.fftSize;
 
     for (let band = 0; band < FREQUENCY_BANDS.length; band++) {
@@ -162,12 +193,33 @@ export class AudioAnalyser {
       this.peaks[band] = Math.max(raw, this.peaks[band] * PEAK_DECAY, NOISE_FLOOR);
       const normalized = raw <= NOISE_FLOOR ? 0 : Math.min(1, raw / this.peaks[band]);
 
-      const previous = this.smoothed[band];
-      const rate = normalized > previous ? ATTACK : RELEASE;
-      this.smoothed[band] = previous + (normalized - previous) * rate;
+      // The first derivative, taken before smoothing so it is not flattened by it, and only the
+      // rising half of it. A band falling away is not an event; a band arriving is. This is what
+      // separates a kick from a sustained bass note of the same loudness — the sustained note has
+      // level and no onset, the kick has both.
+      const rise = Math.max(0, normalized - this.previous[band]) * ONSET_SCALE * frameScale;
+      this.previous[band] = normalized;
+      // Rises immediately and decays on its own, so a transient reads as a spike rather than a step.
+      this.onsets[band] = Math.min(1, rise > this.onsets[band] ? rise : this.onsets[band] * ONSET_DECAY);
+
+      const smoothedPrevious = this.smoothed[band];
+      const rate = normalized > smoothedPrevious ? ATTACK : RELEASE;
+      this.smoothed[band] = smoothedPrevious + (normalized - smoothedPrevious) * rate;
     }
 
     return this.smoothed;
+  }
+
+  /**
+   * Positive rate of change per band, as of the last `levels()` call.
+   *
+   * Kept separate rather than folded in, because how much of a control's movement should come from
+   * onsets and how much from level is a decision that belongs to whoever is playing it — a filter
+   * that only reacts to attacks feels percussive, one that only reacts to level feels like a
+   * volume pedal, and the interesting settings are in between.
+   */
+  onsetLevels(): Float32Array {
+    return this.onsets;
   }
 
   stop(): void {
@@ -188,8 +240,8 @@ const CONTRAST_FLOOR = 0.04;
 export interface ControlMapping {
   /** Band index per control. */
   assignments: number[];
-  /** Multiplier on the raw band level. Pushes quiet material into range. */
-  gain: number;
+  /** How far, and which way, an already-leading control is pushed further. */
+  leaderBonus: number;
   /**
    * How hard the assigned bands compete with each other.
    *
@@ -208,18 +260,58 @@ export interface ControlMapping {
 }
 
 /**
- * Turns band levels into a control vector.
+ * What each band is contributing, before anything is mapped to a control.
+ *
+ * Level plus a share of the onset, then that band's own gain. Per-band gain rather than one master:
+ * the bands do not arrive on remotely equal footing in real music — a mix with a loud kick and a
+ * quiet hi-hat needs them scaled differently before any of the competition downstream means
+ * anything, and a single multiplier can only move all five together.
+ */
+export function bandActivations(
+  levels: ArrayLike<number>,
+  onsets: ArrayLike<number>,
+  gains: number[],
+  onsetBoost: number,
+): number[] {
+  return FREQUENCY_BANDS.map((_, band) => {
+    const level = levels[band] ?? 0;
+    const onset = onsets[band] ?? 0;
+    const gain = gains[band] ?? 1;
+    return Math.min(1, (level + onsetBoost * onset) * gain);
+  });
+}
+
+/**
+ * Turns band activations into a control vector.
  *
  * Pure, and separate from the engine, so the shaping can be checked against known inputs rather
  * than inferred from watching a picture move.
  */
-export function mapLevelsToControls(base: number[], levels: ArrayLike<number>, mapping: ControlMapping): number[] {
-  const { assignments, gain, sensitivity, amount } = mapping;
+export function mapLevelsToControls(
+  base: number[],
+  activations: ArrayLike<number>,
+  mapping: ControlMapping,
+): number[] {
+  const { assignments, sensitivity, amount, leaderBonus } = mapping;
 
   const scaled = base.map((_, index) => {
     const band = assignments[index] ?? DEFAULT_BAND_ASSIGNMENTS[index] ?? index;
-    return Math.min(1, (levels[band] ?? 0) * gain);
+    return Math.min(1, activations[band] ?? 0);
   });
+
+  // Whichever control is already ahead is pushed further ahead, by a share of the distance it has
+  // left to the top. The competition below reshapes the whole set against its peak; this is the
+  // separate thing of rewarding the winner for winning, which is what makes one texture clearly
+  // take the frame on a hit rather than the two of them trading small margins.
+  if (leaderBonus > 0 && scaled.length > 1) {
+    let leader = 0;
+    for (let index = 1; index < scaled.length; index++) {
+      if (scaled[index] > scaled[leader]) leader = index;
+    }
+    if (scaled[leader] > CONTRAST_FLOOR) {
+      scaled[leader] = scaled[leader] + leaderBonus * (1 - scaled[leader]);
+    }
+  }
 
   let shaped = scaled;
   const peak = scaled.reduce((most, value) => Math.max(most, value), 0);

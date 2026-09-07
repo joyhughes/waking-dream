@@ -728,3 +728,21 @@ select {
   font-family: ui-monospace, SFMono-Regular, monospace;
   color: var(--accent);
 }
+
+.band-gains {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 7px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--panel-edge);
+}
+
+.band-gains > .control-label {
+  /* The group's own heading, so five sliders read as one control rather than five loose ones. */
+  color: var(--dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}

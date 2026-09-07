@@ -194,6 +194,8 @@ export async function runSelfTest(): Promise<CheckResult[]> {
     results.push(await checkAudioBands());
     results.push(await checkAudioSensitivity());
     results.push(await checkModulation());
+    results.push(await checkOnsetAndLeader());
+    results.push(await checkLiveOnset());
     results.push(await checkBrowserTrainerParity(ctx, ops));
 
     const exported = await checkExportedReference(ctx, ops);
@@ -799,7 +801,7 @@ async function checkAudioSensitivity(): Promise<CheckResult> {
 
     // Two bands close together, which is the case that read as subtle: 0.60 against 0.48.
     const levels = [0.6, 0, 0.48, 0, 0];
-    const mapping = { assignments: [0, 2], gain: 1, amount: 1, sensitivity: 0 };
+    const mapping = { assignments: [0, 2], amount: 1, sensitivity: 0, leaderBonus: 0 };
 
     const flat = mapLevelsToControls([0, 0], levels, mapping);
     const keen = mapLevelsToControls([0, 0], levels, { ...mapping, sensitivity: 1 });
@@ -884,6 +886,115 @@ async function checkModulation(): Promise<CheckResult> {
       detail: problems.length === 0
         ? `saturation 1 → ${atMax.toFixed(2)} at +1, ${atMin.toFixed(2)} at −1, 1.25 at half/half`
         : problems.join('; '),
+    };
+  } catch (error) {
+    return { name, passed: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Checks the three new shaping stages against known numbers: per-band gain, the onset term, and the
+ * bonus the leading control gets.
+ */
+async function checkOnsetAndLeader(): Promise<CheckResult> {
+  const name = 'band gain, onset boost and leader bonus each do their own job';
+  try {
+    const { bandActivations, mapLevelsToControls } = await import('./pipeline/audio');
+    const problems: string[] = [];
+
+    const levels = [0.4, 0, 0.4, 0, 0];
+    const noOnset = [0, 0, 0, 0, 0];
+    const bassOnset = [0.5, 0, 0, 0, 0];
+
+    // Gain is per band and independent.
+    const gained = bandActivations(levels, noOnset, [2, 1, 0.5, 1, 1], 0);
+    if (Math.abs(gained[0] - 0.8) > 1e-6) problems.push(`bass gain 2x on 0.4 should be 0.8, got ${gained[0]}`);
+    if (Math.abs(gained[2] - 0.2) > 1e-6) problems.push(`vocal gain 0.5x on 0.4 should be 0.2, got ${gained[2]}`);
+
+    // With identical levels, only the band that is rising moves.
+    const withOnset = bandActivations(levels, bassOnset, [1, 1, 1, 1, 1], 1);
+    if (!(withOnset[0] > withOnset[2] + 0.4)) {
+      problems.push(`a rising band should clear a steady one of the same level: ${withOnset[0]} vs ${withOnset[2]}`);
+    }
+    // And at zero boost it must make no difference at all.
+    const boostOff = bandActivations(levels, bassOnset, [1, 1, 1, 1, 1], 0);
+    if (Math.abs(boostOff[0] - boostOff[2]) > 1e-9) problems.push('onset changed the result with the boost at zero');
+
+    // The leader is pushed toward the top; the other is left where it was.
+    const mapping = { assignments: [0, 2], amount: 1, sensitivity: 0, leaderBonus: 0 };
+    const plain = mapLevelsToControls([0, 0], [0.6, 0, 0.4, 0, 0], mapping);
+    const bonused = mapLevelsToControls([0, 0], [0.6, 0, 0.4, 0, 0], { ...mapping, leaderBonus: 0.5 });
+    if (Math.abs(bonused[0] - 0.8) > 1e-6) problems.push(`leader 0.6 with a 0.5 bonus should reach 0.8, got ${bonused[0]}`);
+    if (Math.abs(bonused[1] - plain[1]) > 1e-9) problems.push('the bonus moved a control that was not leading');
+
+    // Silence must not hand a bonus to whichever band happens to be marginally above zero.
+    const quiet = mapLevelsToControls([0, 0], [0.01, 0, 0.005, 0, 0], { ...mapping, leaderBonus: 1 });
+    if (quiet[0] > 0.05) problems.push(`near-silence was promoted to ${quiet[0].toFixed(3)}`);
+
+    return {
+      name,
+      passed: problems.length === 0,
+      detail: problems.length === 0
+        ? `gain 0.8/0.2 · onset ${withOnset[0].toFixed(2)} vs steady ${withOnset[2].toFixed(2)} · leader 0.6 → ${bonused[0].toFixed(2)}`
+        : problems.join('; '),
+    };
+  } catch (error) {
+    return { name, passed: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Checks that the derivative actually fires on a real signal.
+ *
+ * A tone switched on abruptly is an onset; the same tone held is not. If the analyser cannot tell
+ * those apart, the onset control is measuring nothing and a kick drum will read the same as a
+ * sustained bass note — which is the entire distinction it exists to make.
+ */
+async function checkLiveOnset(): Promise<CheckResult> {
+  const name = 'the derivative fires on a note arriving, not on it being held';
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  try {
+    const { AudioAnalyser } = await import('./pipeline/audio');
+
+    const context = new AudioContext();
+    if (context.state === 'suspended') await context.resume();
+
+    const destination = context.createMediaStreamDestination();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.value = 60;
+    gain.gain.value = 0;
+    oscillator.connect(gain).connect(destination);
+    oscillator.start();
+
+    const analyser = await AudioAnalyser.open({ stream: destination.stream });
+
+    const pump = async (frames: number) => {
+      let peakOnset = 0;
+      for (let i = 0; i < frames; i++) {
+        analyser.levels();
+        peakOnset = Math.max(peakOnset, analyser.onsetLevels()[0]);
+        await sleep(16);
+      }
+      return peakOnset;
+    };
+
+    await pump(20);                 // silence settles
+    gain.gain.value = 0.7;          // the note arrives
+    const arriving = await pump(20);
+    const held = await pump(40);    // and is then simply held
+
+    analyser.stop();
+    oscillator.stop();
+    void context.close();
+
+    const passed = arriving > 0.1 && held < arriving * 0.6;
+    return {
+      name,
+      passed,
+      detail: `onset ${arriving.toFixed(3)} as it arrives, ${held.toFixed(3)} while held`,
     };
   } catch (error) {
     return { name, passed: false, detail: error instanceof Error ? error.message : String(error) };

@@ -102,6 +102,17 @@ function mergeConfig(stored: Partial<EngineConfig>): EngineConfig {
     shallow: { ...DEFAULT_CONFIG.shallow, ...(stored.shallow ?? {}) },
     feedback: { ...DEFAULT_CONFIG.feedback, ...(stored.feedback ?? {}) },
     display: { ...DEFAULT_CONFIG.display, ...(stored.display ?? {}) },
+    // Files written before the gain became per-band carry a single number; spreading it across the
+    // bands reproduces what that file actually sounded like rather than silently reverting to the
+    // defaults.
+    audio: (() => {
+      const audio = { ...DEFAULT_CONFIG.audio, ...(stored.audio ?? {}) };
+      const legacy = (stored.audio as { gain?: number } | undefined)?.gain;
+      if (typeof legacy === 'number' && !Array.isArray((stored.audio as { gains?: number[] })?.gains)) {
+        audio.gains = DEFAULT_CONFIG.audio.gains.map(() => legacy);
+      }
+      return audio;
+    })(),
     modelControls: stored.modelControls ?? [],
   };
 }
