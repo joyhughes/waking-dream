@@ -7,7 +7,8 @@ import {
   type EngineStatus,
   type ProcessorMode,
 } from './pipeline/engine';
-import { CanvasRecorder, download, saveCanvasFrame, timestampedName } from './pipeline/recorder';
+import { CanvasRecorder, download, extensionForMimeType, saveCanvasFrame, timestampedName } from './pipeline/recorder';
+import { buildParameters, couldCarryParameters, describeParameters, readParameters, type EmbeddedParameters } from './pipeline/parameters';
 import { CameraSource, ImageSource, VideoFileSource, type FrameSource } from './pipeline/sources';
 import { createTestPattern } from './pipeline/testPattern';
 import type { ControlSpec } from './model/format';
@@ -49,6 +50,7 @@ export default function App() {
   const [loadingModel, setLoadingModel] = useState(false);
   const [saved, setSaved] = useState<SavedModelMeta[]>([]);
   const [recording, setRecording] = useState(false);
+  const [foundParameters, setFoundParameters] = useState<EmbeddedParameters | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -99,6 +101,15 @@ export default function App() {
     setConfigState(engine.getConfig());
   }, []);
 
+  const readParametersFromFile = useCallback(async (file: File): Promise<EmbeddedParameters | null> => {
+    if (!couldCarryParameters(file)) return null;
+    try {
+      return readParameters(new Uint8Array(await file.arrayBuffer()));
+    } catch {
+      return null;
+    }
+  }, []);
+
   const attachSource = useCallback(
     async (open: () => Promise<FrameSource>) => {
       const engine = engineRef.current;
@@ -115,6 +126,16 @@ export default function App() {
       }
     },
     [],
+  );
+
+  const openImage = useCallback(
+    async (file: File) => {
+      await attachSource(() => ImageSource.open(file));
+      // Offered rather than applied: opening a picture to look at it is not the same as asking to
+      // be moved to wherever its author had the sliders.
+      setFoundParameters(await readParametersFromFile(file));
+    },
+    [attachSource, readParametersFromFile],
   );
 
   const openCamera = useCallback(
@@ -187,6 +208,40 @@ export default function App() {
     }
   }, [applyLoadedModel]);
 
+  /**
+   * Applies settings read out of an image, and reloads the model they were made with when it is
+   * one this build can reach. A model that is not available is reported rather than substituted —
+   * the same sliders on a different network is not the same look, and silently pretending
+   * otherwise would be worse than saying so.
+   */
+  const applyParameters = useCallback(
+    async (parameters: EmbeddedParameters) => {
+      const engine = engineRef.current;
+      if (!engine) return;
+
+      const wanted = parameters.model;
+      if (wanted) {
+        const listing = listings.find((entry) => entry.file === wanted.source);
+        const savedMatch = saved.find((entry) => entry.id === wanted.source || entry.name === wanted.name);
+        if (listing) await loadListing(listing);
+        else if (savedMatch) await loadSaved(savedMatch);
+        else {
+          setNotice(
+            `These settings were made with model "${wanted.name}", which is not in this build. ` +
+              'Everything else has been applied; load that model to match exactly.',
+          );
+        }
+      }
+
+      // Applied after the model, because loading one resets the control vector to its defaults.
+      engine.setConfig(parameters.config);
+      setConfigState(engine.getConfig());
+      engine.discardFeedback();
+      setFoundParameters(null);
+    },
+    [listings, saved, loadListing, loadSaved],
+  );
+
   const runBenchmark = useCallback(async (sizes: number[]): Promise<BenchmarkRow[]> => {
     const engine = engineRef.current;
     if (!engine) throw new Error('The engine is not running.');
@@ -201,7 +256,7 @@ export default function App() {
     try {
       if (recorder.recording) {
         const blob = await recorder.stop();
-        download(blob, timestampedName('dreamnet', blob.type.includes('mp4') ? 'mp4' : 'webm'));
+        download(blob, timestampedName('dreamnet', extensionForMimeType(blob.type)));
         setRecording(false);
       } else {
         recorder.start();
@@ -241,7 +296,7 @@ export default function App() {
                 Use camera
               </button>
               <FileButton label="Open video" accept="video/*" onFile={(file) => void attachSource(() => VideoFileSource.open(file))} />
-              <FileButton label="Open image" accept="image/*" onFile={(file) => void attachSource(() => ImageSource.open(file))} />
+              <FileButton label="Open image" accept="image/*" onFile={(file) => void openImage(file)} />
               <button
                 className="button"
                 data-testid="test-pattern"
@@ -280,11 +335,21 @@ export default function App() {
 
         {notice ? <p className="notice">{notice}</p> : null}
 
+        {foundParameters ? (
+          <div className="notice found-parameters">
+            <span>This image carries settings — {describeParameters(foundParameters)}</span>
+            <ButtonRow>
+              <button className="button small" onClick={() => void applyParameters(foundParameters)}>Apply</button>
+              <button className="button small" onClick={() => setFoundParameters(null)}>Dismiss</button>
+            </ButtonRow>
+          </div>
+        ) : null}
+
         <Section title="Source" hint={sourceLabel}>
           <ButtonRow>
             <button className="button" onClick={() => void openCamera()}>Camera</button>
             <FileButton label="Video…" accept="video/*" onFile={(file) => void attachSource(() => VideoFileSource.open(file))} />
-            <FileButton label="Image…" accept="image/*" onFile={(file) => void attachSource(() => ImageSource.open(file))} />
+            <FileButton label="Image…" accept="image/*" onFile={(file) => void openImage(file)} />
             <button
               className="button"
               onClick={() => void attachSource(() => ImageSource.fromCanvas(createTestPattern(), 'test pattern'))}
@@ -670,12 +735,37 @@ export default function App() {
               className="button"
               onClick={() => {
                 const canvas = canvasRef.current;
-                if (canvas) void saveCanvasFrame(canvas, timestampedName('dreamnet', 'png'));
+                if (!canvas) return;
+                void saveCanvasFrame(
+                  canvas,
+                  timestampedName('dreamnet', 'png'),
+                  buildParameters(
+                    config,
+                    modelInfo ? { source: selectedModel, name: modelInfo.split(' · ')[0] } : null,
+                    status?.captureWidth ?? 0,
+                    status?.captureHeight ?? 0,
+                  ),
+                );
               }}
             >
               Save frame
             </button>
+            <FileButton
+              label="Settings from image…"
+              accept="image/png"
+              onFile={(file) => {
+                void readParametersFromFile(file).then((parameters) => {
+                  if (parameters) void applyParameters(parameters);
+                  else setNotice('That PNG carries no DreamNet settings.');
+                });
+              }}
+            />
           </ButtonRow>
+          <p className="note">
+            Saved frames are PNGs with the full settings written into them, so a frame is a way back
+            to the look that made it — reopen one here, or send it to someone else. Recordings are
+            H.264 MP4 wherever the browser can manage it, which is what QuickTime and Photos open.
+          </p>
           {!CanvasRecorder.supported ? <p className="note">This browser cannot record canvas video.</p> : null}
         </Section>
 

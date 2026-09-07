@@ -190,6 +190,7 @@ export async function runSelfTest(): Promise<CheckResult[]> {
     results.push(checkModel(ctx, ops));
     results.push(checkShallowRuns(ctx, ops));
 
+    results.push(await checkParameterRoundTrip());
     results.push(await checkBrowserTrainerParity(ctx, ops));
 
     const exported = await checkExportedReference(ctx, ops);
@@ -630,6 +631,88 @@ async function checkBrowserTrainerParity(
     model.dispose();
 
     return compare(name, actual, new Float32Array(expected));
+  } catch (error) {
+    return { name, passed: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Checks that settings survive a trip through a PNG, and that the PNG survives the settings.
+ *
+ * Both halves matter. If the parameters do not come back exactly, a saved frame is not a way back
+ * to the look that made it — which is the whole point of embedding them. And if writing the chunk
+ * corrupts the file, every saved image is broken everywhere else, which is a far worse trade than
+ * simply not storing the settings.
+ */
+async function checkParameterRoundTrip(): Promise<CheckResult> {
+  const name = 'settings survive a round trip through a PNG';
+  try {
+    const { buildParameters, readParameters } = await import('./pipeline/parameters');
+    const { embedParameters } = await import('./pipeline/parameters');
+    const { DEFAULT_CONFIG } = await import('./pipeline/engine');
+
+    const config = {
+      ...DEFAULT_CONFIG,
+      captureSize: 384,
+      processor: 'shallow' as const,
+      shallow: { ...DEFAULT_CONFIG.shallow, stepSize: 0.0725, bank: 'blob' as const, colourHold: 0.123 },
+      feedback: { ...DEFAULT_CONFIG.feedback, zoom: 1.0123, rotate: -0.37 },
+      display: { ...DEFAULT_CONFIG.display, saturation: 1.45 },
+      modelControls: [0.25, 0.75],
+    };
+    // A name with a character outside Latin-1, which is exactly what the chunk cannot hold raw and
+    // the escaping exists to handle.
+    const parameters = buildParameters(config, { source: 'x.dnw', name: 'ノイズ — waves' }, 384, 288);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 24;
+    canvas.height = 16;
+    const context = canvas.getContext('2d')!;
+    context.fillStyle = '#3a7bd5';
+    context.fillRect(0, 0, 24, 16);
+    context.fillStyle = '#d53a7b';
+    context.fillRect(4, 4, 8, 8);
+
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) return { name, passed: false, detail: 'the canvas produced no PNG' };
+
+    const original = new Uint8Array(await blob.arrayBuffer());
+    const embedded = embedParameters(original, parameters);
+    const recovered = readParameters(embedded);
+
+    if (!recovered) return { name, passed: false, detail: 'no parameters could be read back' };
+
+    const differences: string[] = [];
+    if (JSON.stringify(recovered.config) !== JSON.stringify(config)) differences.push('config');
+    if (recovered.model?.name !== parameters.model?.name) {
+      differences.push(`model name (${recovered.model?.name} vs ${parameters.model?.name})`);
+    }
+    if (recovered.captureWidth !== 384 || recovered.captureHeight !== 288) differences.push('capture size');
+
+    // Re-embedding must replace rather than append, or a frame re-saved a few times grows a chunk
+    // each time and the reader starts finding a stale one first.
+    const twice = embedParameters(embedded, parameters);
+    if (twice.length !== embedded.length) differences.push(`re-embed grew the file by ${twice.length - embedded.length} bytes`);
+
+    // And the result still has to be an image.
+    let decoded = false;
+    try {
+      const bitmap = await createImageBitmap(new Blob([embedded], { type: 'image/png' }));
+      decoded = bitmap.width === 24 && bitmap.height === 16;
+      bitmap.close();
+    } catch (error) {
+      differences.push(`the PNG no longer decodes: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!decoded && differences.length === 0) differences.push('the PNG decoded to the wrong size');
+
+    return {
+      name,
+      passed: differences.length === 0,
+      detail:
+        differences.length === 0
+          ? `${embedded.length - original.length} bytes added, still decodes, re-embed is idempotent`
+          : differences.join('; '),
+    };
   } catch (error) {
     return { name, passed: false, detail: error instanceof Error ? error.message : String(error) };
   }

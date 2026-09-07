@@ -18,7 +18,14 @@ There are two ways to get a model, and two processors in the app.
 | What it draws | a pattern you supplied, or a distilled DeepDream | oriented texture, ridges, cells |
 | Why it exists | the point of the project | works on day one, and stays as the control |
 
-A trained model comes from one of two paths, both in [`train/`](train/README.md):
+A trained model comes from one of three paths:
+
+- **The Train panel, in the app itself.** Drop in a style image, capture some frames from whatever
+  source is running, and train — no Python, no clone. Uses MobileNet V2 or VGG-19 for its style
+  loss, the same pair and the same tradeoff as the dream app. The whole trainer is behind a dynamic
+  import, so nobody who does not open the panel downloads any of it.
+
+The other two are in [`train/`](train/README.md), on your own machine with PyTorch:
 
 - **[`style.py`](train/README.md#style-transfer-training-with-your-own-patterns)** — drop images in
   `train/styles/` and it learns to paint like them. No dataset build, because the target is a
@@ -27,6 +34,26 @@ A trained model comes from one of two paths, both in [`train/`](train/README.md)
 - **[`train.py`](train/README.md#distilling-deepdream)** — distills your slow DeepDream. Costs hours
   of teacher runs up front, and is the only way to get the semantic hallucination that comes out of
   a deep network's own gradients.
+
+All three write the same `.dnw` and run through the same WebGL kernels at the same speed. A model
+trained in the browser is not a lesser artifact than one trained in PyTorch — just a rougher one,
+for having had a few hundred steps instead of a few thousand.
+
+## Saving, sharing, and getting back to a look
+
+**Frames save as PNG with the whole parameter set written into them**, in a `tEXt` chunk that every
+other decoder skips — so the file stays an ordinary image that Preview and Photos open, and is also
+a way back to the settings that made it. Open one with **Settings from image…**, or just open it as
+an image source and the app offers to apply what it finds. Send someone a frame and they land
+exactly where you were.
+
+**Recordings are H.264 MP4** wherever the browser can manage it, falling back to WebM where it
+cannot. This matters on a Mac: almost nothing outside a browser opens WebM, so a WebM recording
+arrives as a file the machine will not play, while MP4 opens in QuickTime, Photos and Final Cut.
+
+**Models** can be downloaded as `.dnw` and sent to anyone — they load them with *Load .dnw model…*.
+Models trained in the browser can also be saved to it, and then list alongside the shipped ones.
+To ship one with a deployed build, drop it in `public/models/` and run `pnpm models:index`.
 
 The shallow mode is not a placeholder effect. It is genuine activation maximization: the gradient of
 `mean(relu(W * x))` with respect to `x` is exactly a convolution by the flipped, transposed kernel,
@@ -51,8 +78,10 @@ than asking whoever opened it to train one. `train/export.py` maintains that man
 every export, and the models are tracked in git, so a model is live on the next reload and ships
 with `pnpm build` with no further step.
 
-`/selftest.html` runs the numerical self-test: every GPU op against a CPU reference, and a full
-network forward pass against a CPU implementation of the same op list.
+`/selftest.html` runs the numerical self-test: every GPU op against a CPU reference, a full network
+forward pass against a CPU implementation of the same op list, the TFJS trainer's network against
+the WebGL runtime, and a PNG parameter round trip. `/traintest.html` runs a short real training run
+end to end.
 
 ## The size/speed dial
 
@@ -133,17 +162,12 @@ touching the model or pipeline layers.
 Full detail in [`train/README.md`](train/README.md). To train on your own patterns:
 
 ```bash
-cd train
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-
-# put a few images in train/styles/ — each becomes a slider in the app
-python style.py --images ~/Pictures/photos --out runs/patterns
-python export.py --checkpoint runs/patterns/checkpoint.pt \
-    --out ../public/models/patterns.dnw --reference ../public/models/verify.json
+cp ~/art/*.jpg train/styles/     # each image becomes its own slider
+pnpm train -- --images ~/Pictures/photos --name patterns
 ```
 
-Reload the app; the model is in the list and already loaded.
+That sets up the virtualenv on first run, trains, exports into `public/models/`, and rebuilds the
+manifest. Reload the app; the model is in the list and already loaded.
 
 `--style-size` is the control worth knowing about before any other: the network learns strokes at
 the size they appear in pixels, so it sets how large the motifs come out, and it matters far more

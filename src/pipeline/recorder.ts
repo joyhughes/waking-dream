@@ -1,3 +1,5 @@
+import { embedParameters, type EmbeddedParameters } from './parameters';
+
 /**
  * Recording the canvas to a video file, and saving single frames.
  *
@@ -6,11 +8,21 @@
  * context to have been created with `preserveDrawingBuffer`, which is why `gl.ts` asks for it.
  */
 
+/**
+ * MP4 first, deliberately.
+ *
+ * WebM is the format browsers have always recorded to, and on a Mac almost nothing opens it —
+ * QuickTime, Photos, Final Cut and iMessage all refuse, so a recording arrives as a file the
+ * machine cannot play. H.264 in MP4 opens everywhere. Chrome and Safari can both record it now;
+ * the WebM entries stay below as the fallback for browsers that cannot.
+ */
 const CODEC_PREFERENCES = [
+  'video/mp4;codecs=avc1.42E01E',
+  'video/mp4;codecs=h264',
+  'video/mp4',
   'video/webm;codecs=vp9',
   'video/webm;codecs=vp8',
   'video/webm',
-  'video/mp4',
 ];
 
 function pickMimeType(): string | undefined {
@@ -85,17 +97,51 @@ export function download(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-export function saveCanvasFrame(canvas: HTMLCanvasElement, filename: string): Promise<void> {
+/**
+ * Saves the canvas as a PNG, optionally with the settings that made it written into the file.
+ *
+ * PNG rather than JPEG for two reasons: it is lossless, so a frame is a faithful record rather than
+ * a re-encoded approximation of one, and it has somewhere to put the parameters. The metadata rides
+ * in a `tEXt` chunk that every other decoder skips, so the file stays an ordinary image.
+ */
+export function saveCanvasFrame(
+  canvas: HTMLCanvasElement,
+  filename: string,
+  parameters?: EmbeddedParameters,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (!blob) {
         reject(new Error('The canvas produced no image.'));
         return;
       }
-      download(blob, filename);
-      resolve();
+
+      if (!parameters) {
+        download(blob, filename);
+        resolve();
+        return;
+      }
+
+      void blob
+        .arrayBuffer()
+        .then((buffer) => {
+          const withParameters = embedParameters(new Uint8Array(buffer), parameters);
+          download(new Blob([withParameters], { type: 'image/png' }), filename);
+          resolve();
+        })
+        .catch((error) => {
+          // The image matters more than the metadata; if embedding fails, still save the frame.
+          console.warn('Could not embed parameters in the saved frame.', error);
+          download(blob, filename);
+          resolve();
+        });
     }, 'image/png');
   });
+}
+
+/** The extension matching whatever the recorder actually negotiated. */
+export function extensionForMimeType(mimeType: string): string {
+  return mimeType.includes('mp4') ? 'mp4' : 'webm';
 }
 
 export function timestampedName(prefix: string, extension: string): string {
