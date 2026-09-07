@@ -386,3 +386,52 @@ select {
     border-top: 1px solid var(--panel-edge);
   }
 }
+
+/* Training panel ------------------------------------------------------------------------- */
+
+.text-input {
+  width: 100%;
+  padding: 5px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--panel-edge);
+  background: #0f1116;
+  color: var(--text);
+  font: inherit;
+}
+
+.training-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.progress-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: #0f1116;
+  overflow: hidden;
+}
+
+.progress-bar span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #2f6ea3, #7cc4ff);
+  /* The bar is the only thing on this panel that should look like it is moving; a transition
+     keeps it from jumping between the ten-step reporting intervals. */
+  transition: width 0.25s linear;
+}
+
+.training-preview {
+  width: 100%;
+  max-width: 220px;
+  border-radius: 5px;
+  border: 1px solid var(--panel-edge);
+  image-rendering: auto;
+  align-self: center;
+}
+
+.note em {
+  color: var(--text);
+  font-style: normal;
+}

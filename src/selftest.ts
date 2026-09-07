@@ -190,6 +190,8 @@ export async function runSelfTest(): Promise<CheckResult[]> {
     results.push(checkModel(ctx, ops));
     results.push(checkShallowRuns(ctx, ops));
 
+    results.push(await checkBrowserTrainerParity(ctx, ops));
+
     const exported = await checkExportedReference(ctx, ops);
     if (exported) results.push(exported);
   } finally {
@@ -554,6 +556,80 @@ async function checkExportedReference(
     model.dispose();
 
     return compare(name, actual, new Float32Array(reference.output));
+  } catch (error) {
+    return { name, passed: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Checks the in-browser trainer's network against the runtime that will actually run what it trains.
+ *
+ * `dreamNetTf.ts` is a third implementation of the same architecture, alongside the WebGL runtime
+ * and `train/model.py`, and a browser-trained model is only worth anything if all three agree. So:
+ * build one with random weights — including conditioning projections large enough that a transposed
+ * one would show — run it in TFJS, export it through the real exporter, and run the result here.
+ *
+ * This is the check that a PyTorch install is not needed to run, which makes it the one that guards
+ * the browser training path in CI or on a machine with no Python at all.
+ */
+async function checkBrowserTrainerParity(
+  ctx: ReturnType<typeof createGlContext>,
+  ops: Ops,
+): Promise<CheckResult> {
+  const name = 'browser trainer network vs WebGL runtime';
+  try {
+    const [{ tf, initializeTraining }, { DreamNetTf }, { exportDnw, styleControls }] = await Promise.all([
+      import('./train/tfSetup'),
+      import('./train/dreamNetTf'),
+      import('./train/exportDnw'),
+    ]);
+    await initializeTraining();
+
+    const config = { width: 4, blocks: 2, filmHidden: 8, condDims: 2 };
+    const model = new DreamNetTf(config);
+
+    // The conditioning projections start at zero, which would let a transposed FiLM weight through
+    // unnoticed. Give them real values so every path in the control MLP carries something.
+    for (const norm of model.norms) {
+      norm.gammaProjection.assign(tf.randomNormal(norm.gammaProjection.shape, 0, 0.3) as never);
+      norm.betaProjection.assign(tf.randomNormal(norm.betaProjection.shape, 0, 0.3) as never);
+    }
+    for (const norm of model.norms) {
+      norm.gamma.assign(tf.randomNormal(norm.gamma.shape, 1, 0.2) as never);
+      norm.beta.assign(tf.randomNormal(norm.beta.shape, 0, 0.2) as never);
+    }
+
+    const size = 32;
+    const controls = [0.7, 0.25];
+    const inputData = randomArray(size * size * 3, 1009, 0.5);
+    for (let i = 0; i < inputData.length; i++) inputData[i] = Math.min(1, Math.max(0, inputData[i] + 0.5));
+
+    const expected = tf.tidy(() => {
+      const images = tf.tensor4d(Array.from(inputData), [1, size, size, 3]);
+      const controlTensor = tf.tensor2d([controls]);
+      return model.forward(images, controlTensor).dataSync() as Float32Array;
+    });
+
+    const buffer = exportDnw(model, {
+      name: 'tf-parity',
+      description: 'Self-test model built by the browser trainer.',
+      controls: styleControls(['a', 'b']),
+      trainedAt: size,
+    });
+
+    const runtimeModel = DreamNet.fromBuffer(ctx, ops, buffer);
+    runtimeModel.setControls(controls);
+
+    const source = ops.pool.acquire({ width: size, height: size, channels: 3 });
+    writeTensor(ctx, source, inputData);
+    const output = runtimeModel.forward(source);
+    const actual = readTensor(ctx, output);
+
+    ops.pool.releaseAll();
+    runtimeModel.dispose();
+    model.dispose();
+
+    return compare(name, actual, new Float32Array(expected));
   } catch (error) {
     return { name, passed: false, detail: error instanceof Error ? error.message : String(error) };
   }

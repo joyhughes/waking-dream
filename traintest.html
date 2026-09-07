@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>DreamNet training smoke test</title>
+    <style>
+      body { background: #0b0c10; color: #e6e8ee; font: 13px/1.5 ui-monospace, SFMono-Regular, monospace; padding: 24px; }
+      .pass { color: #6ee7a8; } .fail { color: #ff8a8a; } .detail { color: #838a99; }
+      #log { color: #838a99; max-height: 40vh; overflow: auto; white-space: pre-wrap; margin-top: 16px; }
+    </style>
+  </head>
+  <body>
+    <h1>DreamNet training smoke test</h1>
+    <div id="out">running…</div>
+    <div id="log"></div>
+    <script type="module">
+      import { runTrainTest } from '/src/traintest.ts';
+      const out = document.getElementById('out');
+      const log = document.getElementById('log');
+      const lines = [];
+      try {
+        const results = await runTrainTest((line) => {
+          lines.push(line);
+          log.textContent = lines.slice(-40).join('\n');
+        });
+        const failed = results.filter((r) => !r.passed).length;
+        out.innerHTML = `<p class="${failed ? 'fail' : 'pass'}">${results.length - failed}/${results.length} checks passed</p><ul>` +
+          results.map((r) => `<li><span class="${r.passed ? 'pass' : 'fail'}">${r.passed ? 'PASS' : 'FAIL'}</span> ${r.name}<br><span class="detail">${r.detail}</span></li>`).join('') + '</ul>';
+        console.log(`TRAINTEST ${failed === 0 ? 'OK' : 'FAILED'} ${results.length - failed}/${results.length}`);
+        for (const r of results) console.log(`${r.passed ? 'PASS' : 'FAIL'} ${r.name} — ${r.detail}`);
+      } catch (error) {
+        out.innerHTML = `<p class="fail">threw: ${error.message}</p><pre>${error.stack}</pre>`;
+        console.error('TRAINTEST THREW', error);
+      }
+    </script>
+  </body>
+</html>

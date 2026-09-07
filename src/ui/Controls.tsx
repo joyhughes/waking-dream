@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 
 /**
  * The control-panel primitives.
@@ -7,19 +7,31 @@ import type { ReactNode } from 'react';
  * just made — "that got better" is not usable without "at 0.42".
  */
 
-export function Section({ title, hint, children, defaultOpen = true }: {
+export function Section({ title, hint, children, defaultOpen = true, lazy = false }: {
   title: string;
   hint?: string;
   children: ReactNode;
   defaultOpen?: boolean;
+  /**
+   * Hold the children back until the section is first opened.
+   *
+   * A `<details>` renders its contents whether or not it is open, so without this the training
+   * panel would mount — and start fetching its several megabytes of TensorFlow — on page load for
+   * everyone, including the majority who never open it.
+   */
+  lazy?: boolean;
 }) {
+  const [opened, setOpened] = useState(defaultOpen);
+
   return (
-    <details className="section" open={defaultOpen}>
+    <details className="section" open={defaultOpen} onToggle={(event) => {
+      if ((event.currentTarget as HTMLDetailsElement).open) setOpened(true);
+    }}>
       <summary>
         <span className="section-title">{title}</span>
         {hint ? <span className="section-hint">{hint}</span> : null}
       </summary>
-      <div className="section-body">{children}</div>
+      <div className="section-body">{!lazy || opened ? children : null}</div>
     </details>
   );
 }
@@ -95,10 +107,13 @@ export function ButtonRow({ children }: { children: ReactNode }) {
   return <div className="button-row">{children}</div>;
 }
 
-export function FileButton({ label, accept, onFile }: {
+export function FileButton({ label, accept, onFile, onFiles, multiple }: {
   label: string;
   accept: string;
-  onFile: (file: File) => void;
+  /** Called with the first file picked. Use `onFiles` when a selection of several is meaningful. */
+  onFile?: (file: File) => void;
+  onFiles?: (files: File[]) => void;
+  multiple?: boolean;
 }) {
   return (
     <label className="button file-button">
@@ -106,9 +121,13 @@ export function FileButton({ label, accept, onFile }: {
       <input
         type="file"
         accept={accept}
+        multiple={multiple ?? Boolean(onFiles)}
         onChange={(event) => {
-          const file = event.target.files?.[0];
-          if (file) onFile(file);
+          const files = Array.from(event.target.files ?? []);
+          if (files.length > 0) {
+            onFiles?.(files);
+            onFile?.(files[0]);
+          }
           // Cleared so picking the same file twice in a row still fires a change event.
           event.target.value = '';
         }}

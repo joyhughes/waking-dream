@@ -12,6 +12,8 @@ import { CameraSource, ImageSource, VideoFileSource, type FrameSource } from './
 import { createTestPattern } from './pipeline/testPattern';
 import type { ControlSpec } from './model/format';
 import { fetchModelListings, formatSize, modelUrl, type ModelListing } from './model/registry';
+import { deleteSavedModel, listSavedModels, loadSavedModel, type SavedModelMeta } from './model/storage';
+import { TrainPanel } from './ui/TrainPanel';
 import type { FeatureBank } from './model/shallowDream';
 import { BenchmarkPanel } from './ui/BenchmarkPanel';
 import { VideoTransport } from './ui/VideoTransport';
@@ -45,6 +47,7 @@ export default function App() {
   const [listings, setListings] = useState<ModelListing[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [loadingModel, setLoadingModel] = useState(false);
+  const [saved, setSaved] = useState<SavedModelMeta[]>([]);
   const [recording, setRecording] = useState(false);
 
   useEffect(() => {
@@ -69,6 +72,8 @@ export default function App() {
     const interval = window.setInterval(() => {
       if (latestStatus.current) setStatus(latestStatus.current);
     }, STATUS_INTERVAL_MS);
+
+    void listSavedModels().then(setSaved);
 
     void fetchModelListings().then((found) => {
       setListings(found);
@@ -141,6 +146,27 @@ export default function App() {
       setNotice(null);
       try {
         applyLoadedModel(await engine.loadModel(modelUrl(listing.file)), listing.file);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error));
+      } finally {
+        setLoadingModel(false);
+      }
+    },
+    [applyLoadedModel],
+  );
+
+  const refreshSaved = useCallback(() => {
+    void listSavedModels().then(setSaved);
+  }, []);
+
+  const loadSaved = useCallback(
+    async (meta: SavedModelMeta) => {
+      const engine = engineRef.current;
+      if (!engine) return;
+      setLoadingModel(true);
+      setNotice(null);
+      try {
+        applyLoadedModel(engine.loadModelFromBuffer(await loadSavedModel(meta.id)), meta.id);
       } catch (error) {
         setNotice(error instanceof Error ? error.message : String(error));
       } finally {
@@ -299,24 +325,46 @@ export default function App() {
             ]}
             onChange={(processor) => patchConfig({ processor })}
           />
-          {listings.length > 0 ? (
+          {listings.length > 0 || saved.length > 0 ? (
             <Choice
               label={loadingModel ? 'Model (loading…)' : 'Model'}
               value={selectedModel}
               options={[
-                ...(selectedModel && !listings.some((l) => l.file === selectedModel)
-                  ? [{ value: selectedModel, label: `${selectedModel} (loaded from disk)` }]
+                ...(selectedModel && !listings.some((l) => l.file === selectedModel) && !saved.some((m) => m.id === selectedModel)
+                  ? [{ value: selectedModel, label: `${selectedModel} (from disk)` }]
                   : []),
                 ...listings.map((listing) => ({
                   value: listing.file,
                   label: `${listing.name} · ${formatSize(listing.bytes)}`,
                 })),
+                ...saved.map((meta) => ({
+                  value: meta.id,
+                  label: `${meta.name} · ${formatSize(meta.bytes)} · saved here`,
+                })),
               ]}
-              onChange={(file) => {
-                const listing = listings.find((entry) => entry.file === file);
-                if (listing) void loadListing(listing);
+              onChange={(value) => {
+                const listing = listings.find((entry) => entry.file === value);
+                if (listing) {
+                  void loadListing(listing);
+                  return;
+                }
+                const meta = saved.find((entry) => entry.id === value);
+                if (meta) void loadSaved(meta);
               }}
             />
+          ) : null}
+          {saved.some((meta) => meta.id === selectedModel) ? (
+            <ButtonRow>
+              <button
+                className="button small"
+                onClick={() => {
+                  const meta = saved.find((entry) => entry.id === selectedModel);
+                  if (meta) void deleteSavedModel(meta.id).then(refreshSaved);
+                }}
+              >
+                Delete saved model
+              </button>
+            </ButtonRow>
           ) : null}
           <ButtonRow>
             <FileButton label="Load .dnw model…" accept=".dnw" onFile={(file) => void loadModelFile(file)} />
@@ -484,6 +532,30 @@ export default function App() {
             ))}
           </Section>
         ) : null}
+
+        <Section title="Train a style" hint="in this browser" defaultOpen={false} lazy>
+          <TrainPanel
+            getSource={() => engineRef.current?.currentSource ?? null}
+            onUseModel={(buffer, name) => {
+              const engine = engineRef.current;
+              if (!engine) return;
+              try {
+                applyLoadedModel(engine.loadModelFromBuffer(buffer), name);
+              } catch (error) {
+                setNotice(error instanceof Error ? error.message : String(error));
+              }
+            }}
+            onSavedModelsChanged={refreshSaved}
+            onBusyChange={(training) => {
+              // The runtime and the trainer would otherwise be competing for the GPU sixty times a
+              // second, which makes the training run crawl and the preview stutter.
+              const engine = engineRef.current;
+              if (!engine) return;
+              if (training) engine.stop();
+              else engine.start();
+            }}
+          />
+        </Section>
 
         <Section title="Feedback" hint={config.feedback.enabled ? 'on' : 'off'}>
           <Toggle

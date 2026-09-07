@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "train": "node scripts/train.mjs",
+    "models:index": "node scripts/build-model-index.mjs"
   },
   "dependencies": {
     "@tensorflow-models/mobilenet": "^2.1.1",
