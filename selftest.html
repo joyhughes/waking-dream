@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>DreamNet self-test</title>
+    <style>
+      body { background: #0b0c10; color: #e6e8ee; font: 13px/1.5 ui-monospace, SFMono-Regular, monospace; padding: 24px; }
+      h1 { font-size: 16px; }
+      .pass { color: #6ee7a8; }
+      .fail { color: #ff8a8a; }
+      li { margin-bottom: 4px; }
+      .detail { color: #838a99; }
+    </style>
+  </head>
+  <body>
+    <h1>DreamNet runtime self-test</h1>
+    <div id="out">running…</div>
+    <script type="module">
+      import { runSelfTest } from '/src/selftest.ts';
+      const out = document.getElementById('out');
+      try {
+        const results = await runSelfTest();
+        const failed = results.filter((r) => !r.passed).length;
+        out.innerHTML =
+          `<p class="${failed ? 'fail' : 'pass'}">${results.length - failed}/${results.length} checks passed</p><ul>` +
+          results
+            .map((r) => `<li><span class="${r.passed ? 'pass' : 'fail'}">${r.passed ? 'PASS' : 'FAIL'}</span> ${r.name}<br><span class="detail">${r.detail}</span></li>`)
+            .join('') +
+          '</ul>';
+        console.log(`SELFTEST ${failed === 0 ? 'OK' : 'FAILED'} ${results.length - failed}/${results.length}`);
+        for (const r of results) console.log(`${r.passed ? 'PASS' : 'FAIL'} ${r.name} — ${r.detail}`);
+      } catch (error) {
+        out.innerHTML = `<p class="fail">threw: ${error.message}</p><pre>${error.stack}</pre>`;
+        console.error('SELFTEST THREW', error);
+      }
+    </script>
+  </body>
+</html>

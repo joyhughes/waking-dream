@@ -1,0 +1,4 @@
+# esbuild's install script links the prebuilt binary vite needs. pnpm requires build scripts to be
+# allowed by name before it will run them.
+allowBuilds:
+  esbuild: true

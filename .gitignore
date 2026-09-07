@@ -1,0 +1,17 @@
+node_modules
+dist
+.DS_Store
+*.local
+
+# Training scratch: the venv, the teacher's cached output, and checkpoints are all
+# reproducible from train/ and far too large to track.
+train/.venv
+train/data
+train/runs
+train/*.pt
+__pycache__
+*.pyc
+
+# Trained models are build outputs of train/export.py. Commit one deliberately if you
+# want it served with the app; by default they stay untracked.
+public/models/*.dnw
