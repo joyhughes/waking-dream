@@ -271,7 +271,7 @@ export default function App() {
   if (fatal) {
     return (
       <div className="fatal">
-        <h1>DreamNet cannot start</h1>
+        <h1>Waking Dream cannot start</h1>
         <p>{fatal}</p>
         <p className="note">
           The runtime needs WebGL2 with renderable float textures. Every current desktop browser has
@@ -289,7 +289,7 @@ export default function App() {
         <canvas ref={canvasRef} />
         {sourceLabel === 'none' ? (
           <div className="empty-stage">
-            <h1>DreamNet</h1>
+            <h1>Waking Dream</h1>
             <p>Real-time dream filtering. Pick a source to begin.</p>
             <ButtonRow>
               <button className="button primary" onClick={() => void openCamera()}>
@@ -319,7 +319,7 @@ export default function App() {
 
       <aside className="panel">
         <header className="panel-header">
-          <h1>DreamNet</h1>
+          <h1>Waking Dream</h1>
           <div className="readout">
             <span className={timing && timing.fps >= 50 ? 'fast' : timing && timing.fps >= 25 ? 'ok' : 'slow'}>
               {timing ? timing.fps.toFixed(0) : '–'} fps

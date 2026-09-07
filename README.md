@@ -1,4 +1,4 @@
-# DreamNet
+# Waking Dream
 
 Real-time DeepDream-style filtering in the browser: camera, video files, or a single still image fed
 back into itself, running through hand-written WebGL2 convolution kernels at video rate.
