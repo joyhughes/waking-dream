@@ -21,20 +21,36 @@ export interface FrameSource {
   dispose(): void;
 }
 
+/** Which way a phone camera points. Desktops have one camera and report it as `user`. */
+export type CameraFacing = 'user' | 'environment';
+
 export class CameraSource implements FrameSource {
   readonly kind = 'camera';
-  readonly defaultMirror = true;
   readonly label: string;
+  /** Which camera this actually is, so the flip control knows what to ask for next. */
+  readonly facing: CameraFacing;
 
   private constructor(
     private readonly video: HTMLVideoElement,
     private readonly stream: MediaStream,
     label: string,
+    facing: CameraFacing,
   ) {
     this.label = label;
+    this.facing = facing;
   }
 
-  static async open(deviceId?: string, requestedHeight = 720): Promise<CameraSource> {
+  /**
+   * The front camera is mirrored and the rear one is not.
+   *
+   * A self-view that is not mirrored is disorienting — moving left sends your reflection right. A
+   * rear camera is not a reflection at all, and mirroring it would be simply wrong.
+   */
+  get defaultMirror(): boolean {
+    return this.facing === 'user';
+  }
+
+  static async open(deviceId?: string, facing: CameraFacing = 'user', requestedHeight = 720): Promise<CameraSource> {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error('This browser will not give a page camera access.');
     }
@@ -42,10 +58,15 @@ export class CameraSource implements FrameSource {
     // The camera is asked for more resolution than the capture size will use. Downscaling a sharp
     // frame on the GPU is free and looks better than asking the camera for a small frame, which on
     // most hardware means a cropped sensor readout rather than a scaled one.
+    //
+    // `facingMode` is how a phone camera is selected: device ids are unstable across sessions on
+    // iOS and their labels are empty until permission has been granted at least once, so a device
+    // picker cannot be built before the first successful open. Asking by which way it points works
+    // on the very first call.
     const stream = await navigator.mediaDevices.getUserMedia({
       video: deviceId
         ? { deviceId: { exact: deviceId }, height: { ideal: requestedHeight } }
-        : { facingMode: 'user', height: { ideal: requestedHeight } },
+        : { facingMode: { ideal: facing }, height: { ideal: requestedHeight } },
       audio: false,
     });
 
@@ -61,8 +82,19 @@ export class CameraSource implements FrameSource {
     });
     await video.play();
 
-    const label = stream.getVideoTracks()[0]?.label || 'Camera';
-    return new CameraSource(video, stream, label);
+    const track = stream.getVideoTracks()[0];
+    const label = track?.label || 'Camera';
+    // What was asked for is not always what was given — a device with only one camera hands back
+    // whatever it has — so the mirroring follows what the track reports rather than the request.
+    const settings = track?.getSettings?.() as { facingMode?: string } | undefined;
+    const actual: CameraFacing = settings?.facingMode === 'environment' ? 'environment' : facing;
+
+    return new CameraSource(video, stream, label, actual);
+  }
+
+  /** Whether this device has more than one camera to flip between. */
+  static async hasMultipleCameras(): Promise<boolean> {
+    return (await CameraSource.listCameras()).length > 1;
   }
 
   static async listCameras(): Promise<MediaDeviceInfo[]> {

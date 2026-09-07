@@ -4,6 +4,7 @@ import { GpuTensor } from '../gpu/tensor';
 import { DreamNet } from '../model/dreamnet';
 import { DEFAULT_SHALLOW_PARAMS, ShallowDream, type ShallowDreamParams } from '../model/shallowDream';
 import type { FrameSource } from './sources';
+import { AudioAnalyser, DEFAULT_BAND_ASSIGNMENTS, FREQUENCY_BANDS } from './audio';
 import { getDeviceLimits } from './deviceLimits';
 import { FrameTimer, type TimingSnapshot } from './stats';
 
@@ -38,6 +39,23 @@ export interface FeedbackConfig {
   fade: number;
 }
 
+/**
+ * How sound drives the model's controls.
+ *
+ * The conditioning is already a per-frame CPU calculation, so where its numbers come from is
+ * entirely open — sliders or a spectrum analyser cost the same. A model holding several patterns
+ * becomes an instrument this way.
+ */
+export interface AudioConfig {
+  enabled: boolean;
+  /** Crossfade between the slider value and the band level. 1 is fully sound-driven. */
+  amount: number;
+  /** Multiplier on the band level before it is clamped, for pushing quiet material into range. */
+  gain: number;
+  /** Band index per control. Defaults put bass on the first control and the vocal range on the second. */
+  assignments: number[];
+}
+
 export interface DisplayConfig {
   /** Cross-fade between the untouched capture and the network's output. */
   mix: number;
@@ -61,8 +79,19 @@ export interface EngineConfig {
   modelControls: number[];
   feedback: FeedbackConfig;
   display: DisplayConfig;
+  audio: AudioConfig;
   /** Null follows the source's own default: mirrored for a camera, not for a file. */
   mirror: boolean | null;
+  /**
+   * Take the capture's aspect ratio from the screen rather than from the source.
+   *
+   * A phone screen is much taller than any camera's 4:3 or 16:9, so fitting the whole frame leaves
+   * bars down the sides — which is not what "full screen" means to anyone. With this on, the
+   * capture is shaped like the display and the source is centre-cropped into it, so the picture
+   * goes edge to edge. Nothing is stretched: the crop happens on the way in, and the network sees
+   * exactly the pixels that end up on screen.
+   */
+  fillScreen: boolean;
 }
 
 export const DEFAULT_CONFIG: EngineConfig = {
@@ -82,7 +111,9 @@ export const DEFAULT_CONFIG: EngineConfig = {
     fade: 0.95,
   },
   display: { mix: 1, gain: 1, saturation: 1 },
+  audio: { enabled: false, amount: 1, gain: 1.2, assignments: [...DEFAULT_BAND_ASSIGNMENTS] },
   mirror: null,
+  fillScreen: false,
 };
 
 /** One model's measured cost, for the side-by-side comparison. */
@@ -114,6 +145,8 @@ export interface EngineStatus {
   programCount: number;
   renderer: string;
   modelName: string | null;
+  /** Per-band levels when audio is running, for the meter. Empty when it is not. */
+  audioLevels: number[];
   error: string | null;
 }
 
@@ -145,6 +178,9 @@ export class Engine {
   private captureWidth = 0;
   private captureHeight = 0;
   private contextLost = false;
+  private audio: AudioAnalyser | null = null;
+  /** Last read band levels, kept so the meter can be drawn without a second analyser pass. */
+  private audioLevels: number[] = new Array(FREQUENCY_BANDS.length).fill(0);
 
   onStatus: ((status: EngineStatus) => void) | null = null;
 
@@ -203,6 +239,16 @@ export class Engine {
 
   get currentSource(): FrameSource | null {
     return this.source;
+  }
+
+  setAudio(analyser: AudioAnalyser | null): void {
+    this.audio?.stop();
+    this.audio = analyser;
+    if (!analyser) this.audioLevels = new Array(FREQUENCY_BANDS.length).fill(0);
+  }
+
+  get currentAudio(): AudioAnalyser | null {
+    return this.audio;
   }
 
   async loadModel(url: string): Promise<DreamNet> {
@@ -335,7 +381,7 @@ export class Engine {
     switch (this.config.processor) {
       case 'model': {
         if (!this.model) return input;
-        this.model.setControls(this.config.modelControls);
+        this.model.setControls(this.resolveControls());
         return this.model.forward(input);
       }
       case 'shallow':
@@ -363,6 +409,28 @@ export class Engine {
     const preserved = this.ops.pool.acquire({ width, height, channels: 3 });
     this.ops.preserveColor(processed, captured, preserved, Math.min(1, amount));
     return preserved;
+  }
+
+  /**
+   * The control vector for this frame: the sliders, or the spectrum, or a blend.
+   *
+   * Read here rather than pushed in from the UI because it changes every frame. Routing sixty
+   * updates a second through React state would cost far more than the forward pass it is feeding.
+   */
+  private resolveControls(): number[] {
+    const base = this.config.modelControls;
+    const { enabled, amount, gain, assignments } = this.config.audio;
+
+    if (!enabled || !this.audio) return base;
+
+    const levels = this.audio.levels();
+    this.audioLevels = Array.from(levels);
+
+    return base.map((value, index) => {
+      const band = assignments[index] ?? DEFAULT_BAND_ASSIGNMENTS[index] ?? index;
+      const level = Math.min(1, (levels[band] ?? 0) * gain);
+      return value * (1 - amount) + level * amount;
+    });
   }
 
   /** Copies this frame's output into the persistent buffer the next frame will warp and mix in. */
@@ -395,7 +463,15 @@ export class Engine {
     // Clamped rather than trusted. On a phone a capture size that would be merely slow on a desktop
     // is instead the allocation that gets the tab killed, and the failure gives no error to report.
     const longest = Math.max(64, Math.min(getDeviceLimits().maxCaptureSize, this.config.captureSize));
-    const aspect = source.width / source.height;
+
+    // With fillScreen the capture is shaped like the display rather than like the camera, and
+    // `fromSource` centre-crops into it — so the picture goes edge to edge with nothing stretched.
+    const container = this.canvas.parentElement;
+    const displayAspect =
+      this.config.fillScreen && container && container.clientHeight > 0
+        ? container.clientWidth / container.clientHeight
+        : 0;
+    const aspect = displayAspect > 0 ? displayAspect : source.width / source.height;
     const raw = aspect >= 1 ? { width: longest, height: longest / aspect } : { width: longest * aspect, height: longest };
     return {
       width: Math.max(64, Math.round(raw.width / 8) * 8),
@@ -527,6 +603,7 @@ export class Engine {
       programCount: this.ops.programCount,
       renderer: this.ctx.caps.rendererName,
       modelName: this.model?.name ?? null,
+      audioLevels: this.config.audio.enabled && this.audio ? this.audioLevels : [],
       error: this.error,
     };
   }
@@ -534,6 +611,7 @@ export class Engine {
   dispose(): void {
     this.stop();
     this.source?.dispose();
+    this.audio?.stop();
     this.model?.dispose();
     this.previous?.dispose();
     this.shallow.dispose();

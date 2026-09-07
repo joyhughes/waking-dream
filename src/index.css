@@ -31,6 +31,13 @@ body,
   margin: 0;
 }
 
+#root {
+  /* Dynamic viewport height, so the layout follows Safari's toolbars sliding in and out instead of
+     leaving the bottom of the panel permanently under them. Falls back to the 100% above. */
+  height: 100dvh;
+  overflow: hidden;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -40,8 +47,19 @@ body {
 
 .app {
   display: grid;
-  grid-template-columns: 1fr 340px;
+  grid-template-columns: minmax(0, 1fr) 340px;
   height: 100%;
+}
+
+/* Immersive: the whole viewport goes to the picture. Independent of the Fullscreen API, which iOS
+   Safari grants only to video elements — so this has to work on its own, and does. */
+.app[data-immersive='true'] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.app[data-immersive='true'] .panel {
+  display: none;
 }
 
 .stage {
@@ -58,6 +76,36 @@ body {
   max-width: 100%;
   max-height: 100%;
   image-rendering: auto;
+}
+
+/* Floating controls over the picture. Insets keep them clear of the notch and the home indicator,
+   which in landscape sit on the long edges rather than the top and bottom. */
+.stage-overlay {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  right: max(10px, env(safe-area-inset-right));
+  display: flex;
+  gap: 6px;
+  z-index: 3;
+}
+
+.overlay-button {
+  padding: 7px 11px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(10, 12, 18, 0.62);
+  backdrop-filter: blur(8px);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  /* Apple's minimum comfortable touch target; these are the only controls reachable in immersive
+     mode, so they must not be fiddly. */
+  min-height: 34px;
+}
+
+.overlay-button:hover {
+  background: rgba(20, 24, 34, 0.8);
 }
 
 .empty-stage {
@@ -375,15 +423,71 @@ select {
   margin: 0 0 8px;
 }
 
-@media (max-width: 860px) {
+/*
+ * Portrait on a narrow screen: stack, picture above controls.
+ *
+ * Gated on portrait specifically. A phone in landscape is around 844px wide, so an unqualified
+ * max-width rule caught it too and stacked a 390px-tall viewport into a 45% picture with the
+ * controls crammed underneath — which is exactly the case this layout is worst at.
+ */
+@media (max-width: 860px) and (orientation: portrait) {
   .app {
-    grid-template-columns: 1fr;
-    grid-template-rows: 45vh 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 45dvh) minmax(0, 1fr);
   }
 
   .panel {
     border-left: none;
     border-top: 1px solid var(--panel-edge);
+    padding-bottom: max(24px, env(safe-area-inset-bottom));
+  }
+}
+
+/*
+ * Landscape on a short screen: keep the two columns and tighten them.
+ *
+ * Vertical space is the scarce thing here, so the panel keeps its own scroll on the side rather
+ * than taking a share of the height, and the header stops being sticky — at this height a sticky
+ * header is a meaningful fraction of the scrollable area.
+ */
+@media (orientation: landscape) and (max-height: 560px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr) clamp(230px, 34vw, 320px);
+  }
+
+  .panel {
+    padding: 8px 10px 16px;
+    padding-right: max(10px, env(safe-area-inset-right));
+  }
+
+  .panel-header {
+    position: static;
+    margin: 0 0 6px;
+    padding: 0 0 6px;
+  }
+
+  .panel-header h1 {
+    display: none;
+  }
+
+  .section-body {
+    gap: 6px;
+    padding-bottom: 6px;
+  }
+
+  .stage {
+    padding-left: env(safe-area-inset-left);
+  }
+}
+
+/* Touch targets. A 4px-tall slider thumb is usable with a mouse and not with a thumb. */
+@media (pointer: coarse) {
+  input[type='range'] {
+    height: 28px;
+  }
+
+  .button {
+    min-height: 34px;
   }
 }
 
@@ -443,4 +547,50 @@ select {
   background: rgba(124, 196, 255, 0.1);
   border-color: rgba(124, 196, 255, 0.35);
   color: var(--text);
+}
+
+/* Band meters ---------------------------------------------------------------------------- */
+
+.meters {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 6px;
+  align-items: end;
+  height: 64px;
+}
+
+.meter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  height: 100%;
+  min-width: 0;
+}
+
+.meter-track {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  border-radius: 3px;
+  background: #0f1116;
+  overflow: hidden;
+}
+
+.meter-track span {
+  display: block;
+  width: 100%;
+  background: linear-gradient(0deg, #2f6ea3, #7cc4ff);
+  /* Only smooths the 200ms gap between status updates — the analyser's own attack and release do
+     the actual shaping, and a longer transition here would fight them. */
+  transition: height 0.18s linear;
+}
+
+.meter-label {
+  font-size: 9px;
+  color: var(--dim);
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

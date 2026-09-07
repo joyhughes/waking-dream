@@ -22,9 +22,10 @@ export interface DeviceLimits {
   /**
    * Prefer the cheapest model on startup rather than the first listed.
    *
-   * On a phone this is two separate wins: a 300 kB download instead of 4 MB, quite possibly over
-   * cellular, and a network whose residual stack is a fraction of the arithmetic. Both matter more
-   * than picking the best-looking model for someone who has not asked for one yet.
+   * Keyed on the connection rather than on being a phone. A modern phone runs the full-size model
+   * comfortably, so choosing the small one for everyone on mobile gave up quality for nothing; what
+   * actually hurts is pulling 4 MB down a metered or slow link before anything appears. So the rule
+   * is about the pipe, not the processor.
    */
   preferCheapestModel: boolean;
 }
@@ -36,6 +37,22 @@ function isMobileBrowser(): boolean {
   // is an iPad, because no actual Mac reports maxTouchPoints above zero.
   const isIpad = /Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1;
   return isIpad || /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent);
+}
+
+/**
+ * Whether the network is the thing to be careful about.
+ *
+ * `saveData` is an explicit request to not spend the user's data, and honouring it is not optional.
+ * The effective-type check catches slow links that have not asked. Chrome-only, so this only ever
+ * adds caution, never removes it.
+ */
+function onSlowConnection(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const connection = (navigator as Navigator & {
+    connection?: { saveData?: boolean; effectiveType?: string };
+  }).connection;
+  if (!connection) return false;
+  return connection.saveData === true || /^(slow-)?2g$|^3g$/.test(connection.effectiveType ?? '');
 }
 
 let cached: DeviceLimits | null = null;
@@ -52,20 +69,20 @@ export function getDeviceLimits(): DeviceLimits {
   cached = constrained
     ? {
         memoryConstrained: true,
-        // A 512x384 feature map at 96 channels is ~18 MB, and a forward pass holds several at once.
-        // 96 MB leaves room for the model, the feedback buffer, and the browser's own frame copies
-        // inside what a phone tab survives.
-        poolBudgetBytes: 96 * 1024 * 1024,
-        maxCaptureSize: 512,
-        defaultCaptureSize: 192,
-        preferCheapestModel: true,
+        // Raised from an initial guess of 96 MB after a full-size model turned out to run fine on a
+        // current phone. This is only a churn ceiling, not a hard limit — the pool never evicts a
+        // tensor a frame is using, so exceeding it costs re-allocation rather than correctness.
+        poolBudgetBytes: 192 * 1024 * 1024,
+        maxCaptureSize: 768,
+        defaultCaptureSize: 256,
+        preferCheapestModel: onSlowConnection(),
       }
     : {
         memoryConstrained: false,
         poolBudgetBytes: 384 * 1024 * 1024,
         maxCaptureSize: 1024,
         defaultCaptureSize: 256,
-        preferCheapestModel: false,
+        preferCheapestModel: onSlowConnection(),
       };
 
   return cached;

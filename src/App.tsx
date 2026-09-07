@@ -10,7 +10,8 @@ import {
 } from './pipeline/engine';
 import { CanvasRecorder, download, extensionForMimeType, saveCanvasFrame, timestampedName } from './pipeline/recorder';
 import { buildParameters, couldCarryParameters, describeParameters, readParameters, type EmbeddedParameters } from './pipeline/parameters';
-import { CameraSource, ImageSource, VideoFileSource, type FrameSource } from './pipeline/sources';
+import { AudioAnalyser, FREQUENCY_BANDS } from './pipeline/audio';
+import { CameraSource, ImageSource, VideoFileSource, type CameraFacing, type FrameSource } from './pipeline/sources';
 import { createTestPattern } from './pipeline/testPattern';
 import type { ControlSpec } from './model/format';
 import { costLabel, fetchModelListings, formatSize, modelUrl, type ModelListing } from './model/registry';
@@ -53,6 +54,10 @@ export default function App() {
   const [saved, setSaved] = useState<SavedModelMeta[]>([]);
   const [recording, setRecording] = useState(false);
   const [foundParameters, setFoundParameters] = useState<EmbeddedParameters | null>(null);
+  const [immersive, setImmersive] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState<CameraFacing>('user');
+  const [multipleCameras, setMultipleCameras] = useState(false);
+  const [audioLabel, setAudioLabel] = useState<string | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -77,6 +82,12 @@ export default function App() {
       if (latestStatus.current) setStatus(latestStatus.current);
     }, STATUS_INTERVAL_MS);
 
+    // Esc, or the system gesture, exits fullscreen without going through the button.
+    const onFullscreenChange = () => {
+      if (!document.fullscreenElement) setImmersive(false);
+    };
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+
     void listSavedModels().then(setSaved);
 
     void fetchModelListings().then((found) => {
@@ -94,6 +105,7 @@ export default function App() {
 
     return () => {
       window.clearInterval(interval);
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
       engine.dispose();
       engineRef.current = null;
     };
@@ -147,14 +159,55 @@ export default function App() {
   );
 
   const openCamera = useCallback(
-    async (deviceId?: string) => {
-      await attachSource(() => CameraSource.open(deviceId));
+    async (deviceId?: string, facing: CameraFacing = 'user') => {
+      await attachSource(() => CameraSource.open(deviceId, facing));
       // Device labels are empty until a camera permission has been granted at least once, so the
       // list is only worth populating after the first successful open.
       setCameras(await CameraSource.listCameras());
+      setMultipleCameras(await CameraSource.hasMultipleCameras());
     },
     [attachSource],
   );
+
+  /**
+   * Swaps between the front and rear cameras.
+   *
+   * By facing direction rather than by device id: ids are unstable across sessions on iOS and their
+   * labels are empty until permission has been granted, so the device list is useless on the very
+   * first open — which is exactly when someone wants to turn the camera around.
+   */
+  const flipCamera = useCallback(async () => {
+    const next: CameraFacing = cameraFacing === 'user' ? 'environment' : 'user';
+    setCameraFacing(next);
+    // Back to following the source's own default, so the rear camera stops being mirrored.
+    patchConfig({ mirror: null });
+    await openCamera(undefined, next);
+  }, [cameraFacing, openCamera, patchConfig]);
+
+  /**
+   * Hides the controls and gives the whole viewport to the picture.
+   *
+   * Native fullscreen is requested where it exists, but iOS Safari only grants it to video
+   * elements, so the layout change has to stand on its own — and does. The two are independent:
+   * the CSS gives the full viewport either way, and fullscreen additionally takes the browser
+   * chrome when the browser allows it.
+   */
+  const toggleImmersive = useCallback(() => {
+    const next = !immersive;
+    setImmersive(next);
+    // Immersive means the picture fills the screen, not that it is centred in a black field with
+    // bars down both sides — a phone screen is far taller than any camera's aspect ratio.
+    patchConfig({ fillScreen: next });
+    try {
+      if (next && document.fullscreenEnabled && !document.fullscreenElement) {
+        void document.documentElement.requestFullscreen().catch(() => {});
+      } else if (!next && document.fullscreenElement) {
+        void document.exitFullscreen().catch(() => {});
+      }
+    } catch {
+      // Fullscreen is a bonus; the layout change is the feature.
+    }
+  }, [immersive, patchConfig]);
 
   const applyLoadedModel = useCallback((model: ReturnType<Engine['loadModelFromBuffer']>, source: string) => {
     const engine = engineRef.current;
@@ -289,6 +342,38 @@ export default function App() {
     return rows;
   }, [listings, selectedModel, loadListing]);
 
+  /**
+   * Starts or stops microphone input.
+   *
+   * The permission prompt is the reason this is a button rather than something switched on by
+   * default — asking for a microphone unprompted, on a page that is showing a camera, is not a
+   * thing to do quietly.
+   */
+  const toggleAudio = useCallback(
+    async (enabled: boolean) => {
+      const engine = engineRef.current;
+      if (!engine) return;
+
+      if (!enabled) {
+        engine.setAudio(null);
+        setAudioLabel(null);
+        patchConfig({ audio: { ...config.audio, enabled: false } });
+        return;
+      }
+
+      try {
+        const analyser = await AudioAnalyser.open();
+        engine.setAudio(analyser);
+        setAudioLabel(analyser.label);
+        patchConfig({ audio: { ...config.audio, enabled: true } });
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error));
+        patchConfig({ audio: { ...config.audio, enabled: false } });
+      }
+    },
+    [config.audio, patchConfig],
+  );
+
   const runBenchmark = useCallback(async (sizes: number[]): Promise<BenchmarkRow[]> => {
     const engine = engineRef.current;
     if (!engine) throw new Error('The engine is not running.');
@@ -331,9 +416,24 @@ export default function App() {
   const timing = status?.timing;
 
   return (
-    <div className="app">
+    <div className="app" data-immersive={immersive ? 'true' : 'false'}>
       <main className="stage">
         <canvas ref={canvasRef} />
+
+        <div className="stage-overlay">
+          {sourceLabel !== 'none' && multipleCameras && engineRef.current?.currentSource?.kind === 'camera' ? (
+            <button className="overlay-button" onClick={() => void flipCamera()} title="Switch between the front and rear cameras">
+              ⟲ Flip
+            </button>
+          ) : null}
+          <button
+            className="overlay-button"
+            onClick={toggleImmersive}
+            title={immersive ? 'Show the controls' : 'Give the whole screen to the picture'}
+          >
+            {immersive ? '↙ Controls' : '⤢ Full screen'}
+          </button>
+        </div>
         {sourceLabel === 'none' ? (
           <div className="empty-stage">
             <h1>Waking Dream</h1>
@@ -394,7 +494,12 @@ export default function App() {
 
         <Section title="Source" hint={sourceLabel}>
           <ButtonRow>
-            <button className="button" onClick={() => void openCamera()}>Camera</button>
+            <button className="button" onClick={() => void openCamera(undefined, cameraFacing)}>Camera</button>
+            {multipleCameras ? (
+              <button className="button" onClick={() => void flipCamera()}>
+                Flip to {cameraFacing === 'user' ? 'rear' : 'front'}
+              </button>
+            ) : null}
             <FileButton label="Video…" accept="video/*" onFile={(file) => void attachSource(() => VideoFileSource.open(file))} />
             <FileButton label="Image…" accept="image/*" onFile={(file) => void openImage(file)} />
             <button
@@ -677,6 +782,74 @@ export default function App() {
           />
         </Section>
 
+        <Section title="Sound" hint={config.audio.enabled ? audioLabel ?? 'on' : 'off'} defaultOpen={false}>
+          <Toggle
+            label="Drive the model from sound"
+            checked={config.audio.enabled}
+            onChange={(enabled) => void toggleAudio(enabled)}
+            title="Splits the microphone into frequency bands and feeds each one to a model control."
+          />
+
+          {config.processor !== 'model' || modelControls.length === 0 ? (
+            <p className="note">
+              This drives a loaded model's controls, so it needs a model with sliders. Anything
+              trained on several styles has one per style — the point being that different parts of
+              the spectrum can push different textures forward.
+            </p>
+          ) : null}
+
+          {config.audio.enabled ? (
+            <>
+              <div className="meters">
+                {FREQUENCY_BANDS.map((band, index) => (
+                  <div className="meter" key={band.name} title={`${band.low}–${band.high} Hz`}>
+                    <div className="meter-track">
+                      <span style={{ height: `${Math.round((status?.audioLevels[index] ?? 0) * 100)}%` }} />
+                    </div>
+                    <span className="meter-label">{band.label}</span>
+                  </div>
+                ))}
+              </div>
+
+              <Slider
+                label="Amount"
+                value={config.audio.amount}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(amount) => patchConfig({ audio: { ...config.audio, amount } })}
+                title="Crossfade between the slider positions and the sound. 1 is fully sound-driven."
+              />
+              <Slider
+                label="Gain"
+                value={config.audio.gain}
+                min={0.2}
+                max={4}
+                step={0.05}
+                onChange={(gain) => patchConfig({ audio: { ...config.audio, gain } })}
+                title="Pushes quiet material up into range. Levels are already normalized per band against their own recent peak."
+              />
+
+              {modelControls.map((control, index) => (
+                <Choice
+                  key={control.name}
+                  label={control.label}
+                  value={String(config.audio.assignments[index] ?? index)}
+                  options={FREQUENCY_BANDS.map((band, bandIndex) => ({
+                    value: String(bandIndex),
+                    label: `${band.label} · ${band.low}–${band.high} Hz`,
+                  }))}
+                  onChange={(value) => {
+                    const assignments = config.audio.assignments.slice();
+                    assignments[index] = Number(value);
+                    patchConfig({ audio: { ...config.audio, assignments } });
+                  }}
+                />
+              ))}
+            </>
+          ) : null}
+        </Section>
+
         <Section title="Feedback" hint={config.feedback.enabled ? 'on' : 'off'}>
           <Toggle
             label="Feed the output back in"
@@ -783,6 +956,12 @@ export default function App() {
             max={2}
             step={0.01}
             onChange={(gain) => patchConfig({ display: { ...config.display, gain } })}
+          />
+          <Toggle
+            label="Fill the screen"
+            checked={config.fillScreen}
+            onChange={(fillScreen) => patchConfig({ fillScreen })}
+            title="Shape the capture like the display and centre-crop the source into it, instead of fitting the whole frame with bars at the sides. Turned on automatically in full screen."
           />
           <Slider
             label="Saturation"

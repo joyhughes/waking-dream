@@ -191,6 +191,7 @@ export async function runSelfTest(): Promise<CheckResult[]> {
     results.push(checkShallowRuns(ctx, ops));
 
     results.push(await checkParameterRoundTrip());
+    results.push(await checkAudioBands());
     results.push(await checkBrowserTrainerParity(ctx, ops));
 
     const exported = await checkExportedReference(ctx, ops);
@@ -712,6 +713,70 @@ async function checkParameterRoundTrip(): Promise<CheckResult> {
         differences.length === 0
           ? `${embedded.length - original.length} bytes added, still decodes, re-embed is idempotent`
           : differences.join('; '),
+    };
+  } catch (error) {
+    return { name, passed: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Drives the band analyser with tones of known frequency.
+ *
+ * The band edges are the whole point of the sound feature — if bass and the vocal range are not
+ * actually separated, two textures assigned to them move together and the instrument does nothing.
+ * A microphone cannot be asserted on, so this feeds an oscillator in through the same injected
+ * stream path the real input uses.
+ */
+async function checkAudioBands(): Promise<CheckResult> {
+  const name = 'frequency bands separate a 60 Hz tone from a 1 kHz one';
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  try {
+    const { AudioAnalyser, FREQUENCY_BANDS } = await import('./pipeline/audio');
+
+    const context = new AudioContext();
+    if (context.state === 'suspended') await context.resume();
+
+    const destination = context.createMediaStreamDestination();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = 'sine';
+    gain.gain.value = 0.6;
+    oscillator.connect(gain).connect(destination);
+    oscillator.start();
+
+    const analyser = await AudioAnalyser.open({ stream: destination.stream });
+
+    /** Runs the tone for long enough that the attack/release has settled, then reads the bands. */
+    const measure = async (frequency: number): Promise<number[]> => {
+      oscillator.frequency.value = frequency;
+      for (let i = 0; i < 60; i++) {
+        analyser.levels();
+        await sleep(8);
+      }
+      return Array.from(analyser.levels());
+    };
+
+    const bass = await measure(60);
+    const vocal = await measure(1000);
+
+    analyser.stop();
+    oscillator.stop();
+    void context.close();
+
+    const loudest = (levels: number[]) => levels.indexOf(Math.max(...levels));
+    const bassBand = loudest(bass);
+    const vocalBand = loudest(vocal);
+
+    const passed = FREQUENCY_BANDS[bassBand]?.name === 'bass' && FREQUENCY_BANDS[vocalBand]?.name === 'vocal';
+    const show = (levels: number[]) => levels.map((value) => value.toFixed(2)).join(' ');
+
+    return {
+      name,
+      passed,
+      detail:
+        `60 Hz → ${FREQUENCY_BANDS[bassBand]?.label} [${show(bass)}], ` +
+        `1 kHz → ${FREQUENCY_BANDS[vocalBand]?.label} [${show(vocal)}]`,
     };
   } catch (error) {
     return { name, passed: false, detail: error instanceof Error ? error.message : String(error) };
