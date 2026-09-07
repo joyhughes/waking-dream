@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from common import CONTROLS, CONTROL_DIMS, pick_device
+from common import Control, controls_from_json, controls_to_json, pick_device
 from model import DreamNet
 from packing import groups_for, pack_bias_array, pack_conv_array
 
@@ -38,7 +38,14 @@ def pack_bias(bias: torch.Tensor) -> np.ndarray:
     return pack_bias_array(bias.detach().cpu().numpy())
 
 
-def build(model: DreamNet, name: str, description: str, teacher: dict, trained_at: int) -> tuple[dict, np.ndarray, np.ndarray]:
+def build(
+    model: DreamNet,
+    controls: tuple[Control, ...],
+    name: str,
+    description: str,
+    provenance: dict,
+    trained_at: int,
+) -> tuple[dict, np.ndarray, np.ndarray]:
     gpu_chunks: list[np.ndarray] = []
     offsets: list[dict[str, int]] = []
     cursor = 0
@@ -130,7 +137,7 @@ def build(model: DreamNet, name: str, description: str, teacher: dict, trained_a
         "format": DNW_FORMAT,
         "name": name,
         "description": description,
-        "teacher": teacher,
+        "teacher": provenance,
         "trainedAt": trained_at,
         "inputName": "x",
         "outputName": "y",
@@ -140,13 +147,9 @@ def build(model: DreamNet, name: str, description: str, teacher: dict, trained_a
         "cpuFloats": int(cpu.size),
         "cpuTensors": cpu_tensors,
         "conditioning": {
-            "dims": CONTROL_DIMS,
+            "dims": int(model.cond_dims),
             "hidden": int(model.film_hidden),
-            "controls": [
-                {"name": c.name, "label": c.label, "description": c.description,
-                 "min": c.minimum, "max": c.maximum, "default": c.default}
-                for c in CONTROLS
-            ],
+            "controls": controls_to_json(controls),
         },
     }
 
@@ -168,13 +171,46 @@ def write_dnw(path: Path, header: dict, gpu: np.ndarray, cpu: np.ndarray) -> Non
         handle.write(cpu.astype("<f4").tobytes())
 
 
+def update_index(model_path: Path, header: dict, byte_size: int) -> Path:
+    """Adds this model to the `index.json` the app reads to populate its model list.
+
+    The app cannot enumerate a directory over HTTP, so a served build needs a manifest of what is
+    there. Keeping it here rather than as a separate build step means an exported model is available
+    in the app immediately, and the same file is what gets deployed.
+    """
+    index_path = model_path.parent / "index.json"
+    entry = {
+        "file": model_path.name,
+        "name": header["name"],
+        "description": header["description"],
+        "bytes": byte_size,
+        "trainedAt": header.get("trainedAt"),
+        "kind": header.get("teacher", {}).get("kind", "unknown"),
+        "controls": [control["label"] for control in header["conditioning"]["controls"]],
+    }
+
+    models: list[dict] = []
+    if index_path.exists():
+        try:
+            models = json.loads(index_path.read_text()).get("models", [])
+        except json.JSONDecodeError:
+            print(f"Warning: {index_path} was not readable JSON; rewriting it.")
+
+    models = [existing for existing in models if existing.get("file") != entry["file"]]
+    models.append(entry)
+    models.sort(key=lambda row: row["name"])
+
+    index_path.write_text(json.dumps({"models": models}, indent=2) + "\n")
+    return index_path
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export a DreamNet checkpoint to .dnw.")
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--out", type=Path, default=Path("../public/models/dreamnet.dnw"))
     parser.add_argument("--name", type=str, default=None, help="Defaults to the output filename.")
-    parser.add_argument("--description", type=str, default="Distilled DeepDream, GoogLeNet teacher.")
-    parser.add_argument("--trained-at", type=int, default=256)
+    parser.add_argument("--description", type=str, default=None, help="Defaults to what the trainer recorded.")
+    parser.add_argument("--trained-at", type=int, default=0, help="0 uses what the trainer recorded.")
     parser.add_argument("--reference", type=Path, default=None,
                         help="Also write a PyTorch input/output pair here for the browser self-test.")
     parser.add_argument("--reference-size", type=int, default=32)
@@ -185,43 +221,66 @@ def main() -> None:
     args = parse_args()
     checkpoint = torch.load(args.checkpoint, map_location="cpu")
 
+    controls = controls_from_json(checkpoint["controls"])
+
     model = DreamNet(
-        width=checkpoint["width"], blocks=checkpoint["blocks"], film_hidden=checkpoint["film_hidden"]
+        width=checkpoint["width"],
+        blocks=checkpoint["blocks"],
+        film_hidden=checkpoint["film_hidden"],
+        cond_dims=len(controls),
     )
     model.load_state_dict(checkpoint["model"])
     model.eval()
 
     name = args.name or args.out.stem
+    # Whatever the trainer recorded about where this model came from — the teacher's backbone for a
+    # distilled one, the style filenames for a style-transfer one. Carried through so a model file
+    # on its own can still say what produced it.
     header, gpu, cpu = build(
-        model, name, args.description,
-        teacher={"backbone": "googlenet", "checkpointEpoch": checkpoint.get("epoch")},
-        trained_at=args.trained_at,
+        model, controls, name,
+        args.description or checkpoint.get("description", ""),
+        provenance=checkpoint.get("provenance", {}),
+        trained_at=args.trained_at or checkpoint.get("trained_at", 256),
     )
     write_dnw(args.out, header, gpu, cpu)
 
-    total = (gpu.size + cpu.size) * 4
-    print(f"Wrote {args.out} — {len(header['ops'])} ops, {model.parameter_count() / 1000:.0f}k parameters, {total / 1024:.0f} kB.")
+    total = int((gpu.size + cpu.size) * 4)
+    print(f"Wrote {args.out} - {len(header['ops'])} ops, {model.parameter_count() / 1000:.0f}k parameters, {total / 1024:.0f} kB.")
+
+    index_path = update_index(args.out, header, total)
+    print(f"Listed it in {index_path}; the app will offer it in its model list.")
 
     if args.reference:
-        write_reference(model, args.out, args.reference, args.reference_size)
+        write_reference(model, controls, args.out, args.reference, args.reference_size)
 
 
 @torch.no_grad()
-def write_reference(model: DreamNet, model_path: Path, reference_path: Path, size: int) -> None:
+def write_reference(
+    model: DreamNet, controls: tuple[Control, ...], model_path: Path, reference_path: Path, size: int
+) -> None:
     """A deterministic input and PyTorch's answer to it, for the browser to check itself against."""
     device = pick_device("cpu")
     generator = torch.Generator(device="cpu").manual_seed(1234)
     source = torch.rand(1, 3, size, size, generator=generator)
-    controls = torch.tensor([[c.default for c in CONTROLS]], dtype=torch.float32)
 
-    output = model.to(device)(source, controls)
+    # Deliberately not the defaults. A default vector is often a corner -- one slider up, the rest at
+    # zero -- and a corner can leave most of the conditioning MLP multiplying by nothing, so a
+    # transposed FiLM projection would sail through the comparison. Spreading the probe across the
+    # range makes every path carry a value.
+    control_vector = torch.tensor(
+        [[c.minimum + (c.maximum - c.minimum) * (0.25 + 0.5 * ((index * 7) % 5) / 4.0)
+          for index, c in enumerate(controls)]],
+        dtype=torch.float32,
+    )
+
+    output = model.to(device)(source, control_vector)
 
     reference_path.parent.mkdir(parents=True, exist_ok=True)
     reference_path.write_text(json.dumps({
         "model": model_path.name,
         "width": size,
         "height": size,
-        "controls": controls.squeeze(0).tolist(),
+        "controls": control_vector.squeeze(0).tolist(),
         # Channel-last flat order, which is how the runtime's readback returns a tensor.
         "input": source.squeeze(0).permute(1, 2, 0).reshape(-1).tolist(),
         "output": output.squeeze(0).permute(1, 2, 0).reshape(-1).tolist(),

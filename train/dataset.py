@@ -21,7 +21,7 @@ from pathlib import Path
 import torch
 from tqdm import tqdm
 
-from common import CONTROLS, find_images, load_image, pick_device, random_controls, save_image, seed_everything, write_jsonl
+from common import DREAM_CONTROLS, find_images, load_image, pick_device, random_controls, save_image, seed_everything, write_jsonl
 from teacher import DeepDreamTeacher, settings_from_controls
 
 
@@ -96,7 +96,7 @@ def main() -> None:
         source = load_image(sources[rng.randrange(len(sources))])
         crop = random_crop(source, args.size, rng)
 
-        controls = random_controls(rng)
+        controls = random_controls(rng, DREAM_CONTROLS)
         settings = settings_from_controls(controls, steps=args.steps, octaves=args.octaves)
 
         dreamed = teacher.dream(crop.unsqueeze(0).to(device), settings).squeeze(0).cpu()
@@ -112,7 +112,7 @@ def main() -> None:
 
     elapsed = time.time() - began
     print(f"Wrote {len(rows)} pairs to {args.out} in {elapsed / 60:.1f} min ({elapsed / max(1, args.count):.2f} s/pair).")
-    print("Controls sampled uniformly over: " + ", ".join(f"{c.name}[{c.minimum}, {c.maximum}]" for c in CONTROLS))
+    print("Controls sampled uniformly over: " + ", ".join(f"{c.name}[{c.minimum}, {c.maximum}]" for c in DREAM_CONTROLS))
 
 
 if __name__ == "__main__":

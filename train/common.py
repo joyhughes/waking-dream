@@ -1,9 +1,10 @@
 """Shared pieces: device selection, the control vector, and image plumbing.
 
-The control vector is defined here and nowhere else. It is the one thing that has to mean exactly
-the same in four places -- the teacher that is asked for a dream at these settings, the dataset that
-records them, the network that is conditioned on them, and the sliders the browser draws -- so it
-lives in a single table that the exporter copies verbatim into the model file.
+A model's control vector is described by a list of `Control`s, and that list travels with the model:
+into the checkpoint, then verbatim into the `.dnw`, where the browser reads it to draw the sliders.
+Nothing on the browser side knows what the controls mean, so the two training paths are free to
+define completely different ones -- distillation exposes the teacher's settings, style transfer
+exposes one weight per pattern -- without any change to the runtime.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ class Control:
     default: float
 
 
-CONTROLS: tuple[Control, ...] = (
+DREAM_CONTROLS: tuple[Control, ...] = (
     Control(
         "layer",
         "Layer depth",
@@ -51,7 +52,42 @@ CONTROLS: tuple[Control, ...] = (
     ),
 )
 
-CONTROL_DIMS = len(CONTROLS)
+DREAM_CONTROL_DIMS = len(DREAM_CONTROLS)
+
+
+def style_controls(names: list[str]) -> tuple[Control, ...]:
+    """One control per style image, so a single model holds several patterns and can mix them live.
+
+    This is the conditioning scheme from Dumoulin et al. 2017: N styles in one network, selected
+    through the instance-norm affines. The controls are weights rather than a single index because
+    the interesting runtime behaviour is the blend -- pushing two patterns against each other is a
+    thing to do with a slider, and picking one from a list is not.
+    """
+    return tuple(
+        Control(
+            f"style{index}",
+            f"Style: {name}",
+            "How strongly this pattern is drawn. Several can be raised at once to blend them.",
+            0.0, 1.0,
+            1.0 if index == 0 else 0.0,
+        )
+        for index, name in enumerate(names)
+    )
+
+
+def controls_to_json(controls: tuple[Control, ...]) -> list[dict]:
+    """The form the controls travel in, through the checkpoint and into the model file."""
+    return [
+        {"name": c.name, "label": c.label, "description": c.description,
+         "min": c.minimum, "max": c.maximum, "default": c.default}
+        for c in controls
+    ]
+
+
+def controls_from_json(rows: list[dict]) -> tuple[Control, ...]:
+    return tuple(
+        Control(r["name"], r["label"], r["description"], r["min"], r["max"], r["default"]) for r in rows
+    )
 
 
 def pick_device(preferred: str | None = None) -> torch.device:
@@ -115,14 +151,14 @@ def save_image(tensor: torch.Tensor, path: Path) -> None:
     Image.fromarray(array).save(path)
 
 
-def random_controls(rng: random.Random) -> list[float]:
+def random_controls(rng: random.Random, controls: tuple[Control, ...]) -> list[float]:
     """A uniformly sampled control vector.
 
     Uniform on purpose. The conditioning has to behave across the whole range a slider can reach,
     and a sampler concentrated on settings that look good would leave the ends of every slider
     trained on nothing.
     """
-    return [rng.uniform(control.minimum, control.maximum) for control in CONTROLS]
+    return [rng.uniform(control.minimum, control.maximum) for control in controls]
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:

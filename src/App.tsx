@@ -11,6 +11,7 @@ import { CanvasRecorder, download, saveCanvasFrame, timestampedName } from './pi
 import { CameraSource, ImageSource, VideoFileSource, type FrameSource } from './pipeline/sources';
 import { createTestPattern } from './pipeline/testPattern';
 import type { ControlSpec } from './model/format';
+import { fetchModelListings, formatSize, modelUrl, type ModelListing } from './model/registry';
 import type { FeatureBank } from './model/shallowDream';
 import { BenchmarkPanel } from './ui/BenchmarkPanel';
 import { VideoTransport } from './ui/VideoTransport';
@@ -41,6 +42,9 @@ export default function App() {
   const [activeSource, setActiveSource] = useState<FrameSource | null>(null);
   const [modelControls, setModelControls] = useState<ControlSpec[]>([]);
   const [modelInfo, setModelInfo] = useState<string | null>(null);
+  const [listings, setListings] = useState<ModelListing[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('');
+  const [loadingModel, setLoadingModel] = useState(false);
   const [recording, setRecording] = useState(false);
 
   useEffect(() => {
@@ -66,11 +70,21 @@ export default function App() {
       if (latestStatus.current) setStatus(latestStatus.current);
     }, STATUS_INTERVAL_MS);
 
+    void fetchModelListings().then((found) => {
+      setListings(found);
+      // A deployed build should open with a trained model already running, not with the fallback
+      // and a menu. Nothing downloads if none were shipped.
+      if (found.length > 0) void loadListing(found[0]);
+    });
+
     return () => {
       window.clearInterval(interval);
       engine.dispose();
       engineRef.current = null;
     };
+    // loadListing is stable for the life of the engine; re-running this effect would reopen the
+    // WebGL context.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const patchConfig = useCallback((patch: Partial<EngineConfig>) => {
@@ -108,22 +122,44 @@ export default function App() {
     [attachSource],
   );
 
+  const applyLoadedModel = useCallback((model: ReturnType<Engine['loadModelFromBuffer']>, source: string) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    setModelControls(model.controls);
+    setModelInfo(
+      `${model.name} · ${formatSize(model.byteLength)}` + (model.trainedAt ? ` · trained at ${model.trainedAt}px` : ''),
+    );
+    setSelectedModel(source);
+    setConfigState(engine.getConfig());
+  }, []);
+
+  const loadListing = useCallback(
+    async (listing: ModelListing) => {
+      const engine = engineRef.current;
+      if (!engine) return;
+      setLoadingModel(true);
+      setNotice(null);
+      try {
+        applyLoadedModel(await engine.loadModel(modelUrl(listing.file)), listing.file);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error));
+      } finally {
+        setLoadingModel(false);
+      }
+    },
+    [applyLoadedModel],
+  );
+
   const loadModelFile = useCallback(async (file: File) => {
     const engine = engineRef.current;
     if (!engine) return;
     setNotice(null);
     try {
-      const model = engine.loadModelFromBuffer(await file.arrayBuffer());
-      setModelControls(model.controls);
-      setModelInfo(
-        `${model.name} · ${(model.byteLength / 1024).toFixed(0)} kB` +
-          (model.trainedAt ? ` · trained at ${model.trainedAt}px` : ''),
-      );
-      setConfigState(engine.getConfig());
+      applyLoadedModel(engine.loadModelFromBuffer(await file.arrayBuffer()), file.name);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     }
-  }, []);
+  }, [applyLoadedModel]);
 
   const runBenchmark = useCallback(async (sizes: number[]): Promise<BenchmarkRow[]> => {
     const engine = engineRef.current;
@@ -252,17 +288,44 @@ export default function App() {
             options={[
               { value: 'off', label: 'Passthrough' },
               { value: 'shallow', label: 'Shallow ascent (no model)' },
-              { value: 'model', label: 'DreamNet model', disabled: modelControls.length === 0 && !modelInfo },
+              { value: 'model', label: 'DreamNet model', disabled: !modelInfo },
             ]}
             onChange={(processor) => patchConfig({ processor })}
           />
+          {listings.length > 0 ? (
+            <Choice
+              label={loadingModel ? 'Model (loading…)' : 'Model'}
+              value={selectedModel}
+              options={[
+                ...(selectedModel && !listings.some((l) => l.file === selectedModel)
+                  ? [{ value: selectedModel, label: `${selectedModel} (loaded from disk)` }]
+                  : []),
+                ...listings.map((listing) => ({
+                  value: listing.file,
+                  label: `${listing.name} · ${formatSize(listing.bytes)}`,
+                })),
+              ]}
+              onChange={(file) => {
+                const listing = listings.find((entry) => entry.file === file);
+                if (listing) void loadListing(listing);
+              }}
+            />
+          ) : null}
           <ButtonRow>
             <FileButton label="Load .dnw model…" accept=".dnw" onFile={(file) => void loadModelFile(file)} />
           </ButtonRow>
-          {modelInfo ? <p className="note">{modelInfo}</p> : (
+          {modelInfo ? (
             <p className="note">
-              No trained model loaded. Train one with <code>train/</code>, or stay on shallow ascent —
-              it runs the same octaves and feedback with a hand-built one-layer feature bank.
+              {modelInfo}
+              {listings.find((entry) => entry.file === selectedModel)?.description
+                ? ` — ${listings.find((entry) => entry.file === selectedModel)!.description}`
+                : ''}
+            </p>
+          ) : (
+            <p className="note">
+              No trained model shipped with this build. Train one with <code>train/style.py</code> for a
+              specific pattern or <code>train/train.py</code> to distill DeepDream, or stay on shallow
+              ascent — it runs the same octaves and feedback with a hand-built one-layer filter bank.
             </p>
           )}
         </Section>

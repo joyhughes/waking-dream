@@ -27,7 +27,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from common import CONTROL_DIMS
 
 
 class ConvLayer(nn.Module):
@@ -81,15 +80,16 @@ class ConditionalInstanceNorm(nn.Module):
 
 
 class DreamNet(nn.Module):
-    def __init__(self, width: int = 16, blocks: int = 5, film_hidden: int = 32):
+    def __init__(self, width: int = 16, blocks: int = 5, film_hidden: int = 32, cond_dims: int = 3):
         super().__init__()
         self.width = width
         self.blocks = blocks
         self.film_hidden = film_hidden
+        self.cond_dims = cond_dims
 
         w1, w2, w4 = width, width * 2, width * 4
 
-        self.film = nn.Linear(CONTROL_DIMS, film_hidden)
+        self.film = nn.Linear(cond_dims, film_hidden)
 
         # Held in flat lists in execution order, because that is the order export.py walks.
         self.convs = nn.ModuleList(

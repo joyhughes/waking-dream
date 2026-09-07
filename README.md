@@ -9,14 +9,24 @@ single frame costs hundreds of passes. This repo takes the other route: train a 
 network **offline** to reproduce what the slow one produces, then run one pass per frame. Same
 effect, no gradient ascent at runtime.
 
-There are two processors in the app, and they answer different questions.
+There are two ways to get a model, and two processors in the app.
 
 | | Trained DreamNet | Shallow ascent |
 |---|---|---|
 | Needs a model file | yes, from `train/` | no, works immediately |
-| What it does | one forward pass of a distilled network | real gradient ascent on a one-layer filter bank |
-| What it draws | whatever the teacher drew — up to eyes and animals | oriented texture, ridges, cells |
+| What it does | one forward pass of a trained network | real gradient ascent on a one-layer filter bank |
+| What it draws | a pattern you supplied, or a distilled DeepDream | oriented texture, ridges, cells |
 | Why it exists | the point of the project | works on day one, and stays as the control |
+
+A trained model comes from one of two paths, both in [`train/`](train/README.md):
+
+- **[`style.py`](train/README.md#style-transfer-training-with-your-own-patterns)** — drop images in
+  `train/styles/` and it learns to paint like them. No dataset build, because the target is a
+  *statistic* of the style image rather than a set of pictures, so a run starts the moment you point
+  it at a folder. Each style image becomes its own slider in the app, and the sliders blend.
+- **[`train.py`](train/README.md#distilling-deepdream)** — distills your slow DeepDream. Costs hours
+  of teacher runs up front, and is the only way to get the semantic hallucination that comes out of
+  a deep network's own gradients.
 
 The shallow mode is not a placeholder effect. It is genuine activation maximization: the gradient of
 `mean(relu(W * x))` with respect to `x` is exactly a convolution by the flipped, transposed kernel,
@@ -34,6 +44,12 @@ pnpm dev            # http://localhost:5173
 
 Pick **Camera**, **Video…**, **Image…**, or **Test pattern** and it starts. No model file is needed
 for shallow mode.
+
+Models in `public/models/` are listed in `index.json`, which the app reads at startup — it lists them
+all and loads the first automatically, so a deployed build opens already running a real model rather
+than asking whoever opened it to train one. `train/export.py` maintains that manifest as part of
+every export, and the models are tracked in git, so a model is live on the next reload and ships
+with `pnpm build` with no further step.
 
 `/selftest.html` runs the numerical self-test: every GPU op against a CPU reference, and a full
 network forward pass against a CPU implementation of the same op list.
@@ -114,30 +130,38 @@ touching the model or pipeline layers.
 
 ## Training a model
 
-See [`train/README.md`](train/README.md). In short:
+Full detail in [`train/README.md`](train/README.md). To train on your own patterns:
 
 ```bash
 cd train
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-python dataset.py --images ~/Pictures/photos --out data/pairs --count 2000
-python train.py --data data/pairs --out runs/dreamnet --epochs 40
-python export.py --checkpoint runs/dreamnet/checkpoint.pt \
-    --out ../public/models/dreamnet.dnw --reference ../public/models/verify.json
+# put a few images in train/styles/ — each becomes a slider in the app
+python style.py --images ~/Pictures/photos --out runs/patterns
+python export.py --checkpoint runs/patterns/checkpoint.pt \
+    --out ../public/models/patterns.dnw --reference ../public/models/verify.json
 ```
 
-Then **Load .dnw model…** in the app. With `--reference` written, `/selftest.html` also checks the
-running WebGL model against what PyTorch computed for the same input — the only check that proves
-the exporter and the runtime agree rather than merely both running.
+Reload the app; the model is in the list and already loaded.
+
+`--style-size` is the control worth knowing about before any other: the network learns strokes at
+the size they appear in pixels, so it sets how large the motifs come out, and it matters far more
+than the loss weights do.
+
+With `--reference` written, `/selftest.html` also runs the *exported* model against what PyTorch
+computed for the same input. That is the only check that proves the exporter and the runtime agree
+rather than merely both running — a weight packed in the wrong order produces a plausible picture,
+not an error.
 
 ## Prior work this builds on
 
 - Mordvintsev et al. 2015 — DeepDream itself, and the octave / Laplacian-normalization / jitter
   recipe `train/teacher.py` implements.
-- Johnson et al. 2016 — feed-forward image transformation with a perceptual loss. The student's
-  architecture and the training loss both come from here; the change is that the target is a
-  DeepDream frame rather than a style image.
+- Gatys et al. 2015 — that the Gram matrix of a network's features captures style.
+- Johnson et al. 2016 — feed-forward image transformation with a perceptual loss, which is what makes
+  style transfer a single pass. The architecture and both training losses come from here; the
+  distillation path's change is that the target is a DeepDream frame rather than a style image.
 - Odena et al. 2016 — why upsampling is nearest-then-convolve rather than a transposed convolution.
 - Dumoulin et al. 2017, Perez et al. 2018 — conditioning a fixed network through its normalization
   layers, which is where the live sliders come from.

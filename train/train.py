@@ -29,11 +29,11 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
-from torchvision import models
 from tqdm import tqdm
 
-from common import load_image, pick_device, read_jsonl, save_image, seed_everything
+from common import DREAM_CONTROLS, controls_to_json, load_image, pick_device, read_jsonl, save_image, seed_everything
 from model import DreamNet
+from perceptual import WARP_PADDING_MODE, VggFeatures, random_warp_grid
 
 
 class PairDataset(Dataset):
@@ -56,54 +56,20 @@ class PairDataset(Dataset):
 
 
 class PerceptualLoss(torch.nn.Module):
-    """VGG-16 feature matching at relu2_2 and relu3_3, the layers Johnson et al. used."""
+    """Feature matching at relu2_2 and relu3_3, the layers Johnson et al. matched content at."""
 
     def __init__(self, device: torch.device):
         super().__init__()
-        weights = models.VGG16_Weights.IMAGENET1K_V1
-        features = models.vgg16(weights=weights).features[:17].eval().to(device)
-        for parameter in features.parameters():
-            parameter.requires_grad_(False)
-        self.features = features
-        self.slices = (9, 16)
-        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1))
-        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1))
+        self.vgg = VggFeatures(device, ("relu2_2", "relu3_3"))
 
     def forward(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         # Both images go through in one batch, which halves the number of VGG passes per step.
-        both = torch.cat([(prediction - self.mean) / self.std, (target - self.mean) / self.std], dim=0)
-
-        total = both.new_zeros(())
-        h = both
-        for index, layer in enumerate(self.features):
-            h = layer(h)
-            if index + 1 in self.slices:
-                predicted, wanted = h.chunk(2, dim=0)
-                total = total + F.mse_loss(predicted, wanted.detach())
+        both = self.vgg(torch.cat([prediction, target], dim=0))
+        total = prediction.new_zeros(())
+        for activations in both.values():
+            predicted, wanted = activations.chunk(2, dim=0)
+            total = total + F.mse_loss(predicted, wanted.detach())
         return total
-
-
-def random_warp_grid(batch: int, height: int, width: int, device: torch.device, strength: float = 0.06) -> torch.Tensor:
-    """A small random similarity transform per example, as a sampling grid.
-
-    Deliberately small. A large warp would ask the network to be equivariant to transformations no
-    camera motion between two consecutive frames could produce, which trades away detail quality for
-    a robustness nothing needs.
-    """
-    angle = (torch.rand(batch, device=device) - 0.5) * 2 * strength
-    scale = 1.0 + (torch.rand(batch, device=device) - 0.5) * 2 * strength
-    shift = (torch.rand(batch, 2, device=device) - 0.5) * 2 * strength
-
-    cos = torch.cos(angle) * scale
-    sin = torch.sin(angle) * scale
-    theta = torch.zeros(batch, 2, 3, device=device)
-    theta[:, 0, 0] = cos
-    theta[:, 0, 1] = -sin
-    theta[:, 1, 0] = sin
-    theta[:, 1, 1] = cos
-    theta[:, :, 2] = shift
-
-    return F.affine_grid(theta, (batch, 3, height, width), align_corners=False)
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,7 +108,9 @@ def main() -> None:
         persistent_workers=True,
     )
 
-    model = DreamNet(width=args.width, blocks=args.blocks, film_hidden=args.film_hidden).to(device)
+    model = DreamNet(
+        width=args.width, blocks=args.blocks, film_hidden=args.film_hidden, cond_dims=len(DREAM_CONTROLS)
+    ).to(device)
     if args.resume:
         model.load_state_dict(torch.load(args.resume, map_location=device)["model"])
 
@@ -187,11 +155,11 @@ def main() -> None:
 
             if args.warp_weight > 0:
                 grid = random_warp_grid(source.shape[0], source.shape[2], source.shape[3], device)
-                warped_input = F.grid_sample(source, grid, align_corners=False, padding_mode="border")
+                warped_input = F.grid_sample(source, grid, align_corners=False, padding_mode=WARP_PADDING_MODE)
                 # Warping the prediction rather than recomputing it: this side is the target, and
                 # letting the gradient flow through both copies makes the constraint symmetric and
                 # noticeably less stable to train.
-                warped_prediction = F.grid_sample(prediction, grid, align_corners=False, padding_mode="border")
+                warped_prediction = F.grid_sample(prediction, grid, align_corners=False, padding_mode=WARP_PADDING_MODE)
                 warp_loss = F.mse_loss(model(warped_input, controls), warped_prediction.detach())
                 loss = loss + args.warp_weight * warp_loss
                 running["warp"] += warp_loss.item()
@@ -214,7 +182,11 @@ def main() -> None:
 
         torch.save(
             {"model": model.state_dict(), "width": args.width, "blocks": args.blocks,
-             "film_hidden": args.film_hidden, "epoch": epoch + 1},
+             "film_hidden": args.film_hidden, "epoch": epoch + 1,
+             "controls": controls_to_json(DREAM_CONTROLS),
+             "description": "Distilled DeepDream, GoogLeNet teacher.",
+             "provenance": {"kind": "distilled", "backbone": "googlenet", "data": str(args.data)},
+             "trained_at": 256},
             args.out / "checkpoint.pt",
         )
         write_previews(model, dataset, device, args.out / "previews" / f"epoch{epoch + 1:03d}")

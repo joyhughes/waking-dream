@@ -12,6 +12,10 @@ train/*.pt
 __pycache__
 *.pyc
 
-# Trained models are build outputs of train/export.py. Commit one deliberately if you
-# want it served with the app; by default they stay untracked.
-public/models/*.dnw
+# Trained models ARE tracked. They are what makes a deployed build usable without asking
+# everyone who opens it to train their own, and export.py lists each one in
+# public/models/index.json so the app can offer it. A model is a couple of megabytes;
+# if a directory of experiments starts accumulating here, prune it rather than ignoring it.
+
+# TypeScript incremental build state, regenerated on every build.
+*.tsbuildinfo
