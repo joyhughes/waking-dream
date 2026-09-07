@@ -1,3 +1,38 @@
 {
-  "models": []
+  "models": [
+    {
+      "file": "dots.dnw",
+      "name": "dots",
+      "description": "Pandas and dot-painting in one network — a slider each, and they blend.",
+      "bytes": 4662620,
+      "trainedAt": 256,
+      "kind": "style",
+      "controls": [
+        "Style: pandas",
+        "Style: dot-painting"
+      ]
+    },
+    {
+      "file": "pandas.dnw",
+      "name": "pandas",
+      "description": "Pandas, quick pass — small network at 128px, 600 iterations.",
+      "bytes": 314808,
+      "trainedAt": 128,
+      "kind": "style",
+      "controls": [
+        "Style: pandas"
+      ]
+    },
+    {
+      "file": "pandas-big.dnw",
+      "name": "pandas-big",
+      "description": "Pandas at a coarser pattern scale — wider network, 4000 iterations at 256px.",
+      "bytes": 4573176,
+      "trainedAt": 256,
+      "kind": "style",
+      "controls": [
+        "Style: pandas"
+      ]
+    }
+  ]
 }

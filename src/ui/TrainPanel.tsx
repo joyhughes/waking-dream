@@ -48,6 +48,7 @@ export function TrainPanel({ getSource, onUseModel, onSavedModelsChanged, onBusy
   const [result, setResult] = useState<TrainingResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [savedId, setSavedId] = useState<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const previewRef = useRef<HTMLCanvasElement | null>(null);
@@ -127,12 +128,51 @@ export function TrainPanel({ getSource, onUseModel, onSavedModelsChanged, onBusy
     setFrames((previous) => [...previous, ...added]);
   }, []);
 
+  /**
+   * Keeps a finished model, in the browser.
+   *
+   * Called automatically the moment a run finishes rather than waiting for a button. A trained
+   * model otherwise exists only in the live page, and a reload — which anything from a config
+   * change to a stray refresh can cause — silently throws away however many minutes went into it.
+   * Losing work to an unclicked button is not a tradeoff worth making for a little tidiness.
+   */
+  const saveToBrowser = useCallback(
+    async (trained: TrainingResult) => {
+      try {
+        const meta = await saveModel(
+          {
+            name: trained.name,
+            description: `Trained in the browser on ${styles.map((style) => style.name).join(', ') || 'no styles'}.`,
+            bytes: trained.bytes,
+            trainedAt: config?.cropSize,
+            controls: trained.controls.map((control) => control.label),
+          },
+          trained.buffer,
+        );
+        setSavedId(meta.id);
+        onSavedModelsChanged();
+        return true;
+      } catch (caught) {
+        // Private browsing and locked-down profiles refuse IndexedDB. The model is still in the
+        // page and still downloadable, so this is a warning rather than a failure.
+        setError(
+          `Trained fine, but this browser would not store the model (${
+            caught instanceof Error ? caught.message : String(caught)
+          }). Download it before reloading.`,
+        );
+        return false;
+      }
+    },
+    [styles, config, onSavedModelsChanged],
+  );
+
   const start = useCallback(async () => {
     const loaded = module ?? (await loadTrainModule());
     if (!config) return;
 
     setError(null);
     setResult(null);
+    setSavedId(null);
     setBusy(true);
     onBusyChange(true);
 
@@ -151,6 +191,8 @@ export function TrainPanel({ getSource, onUseModel, onSavedModelsChanged, onBusy
       setResult(trained);
       // Straight into the fast runtime, so the thing just trained is what is on screen.
       onUseModel(trained.buffer, trained.name);
+      // And kept, before anything else can go wrong.
+      await saveToBrowser(trained);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -158,26 +200,7 @@ export function TrainPanel({ getSource, onUseModel, onSavedModelsChanged, onBusy
       setBusy(false);
       onBusyChange(false);
     }
-  }, [module, config, styles, frames, modelName, onUseModel, onBusyChange]);
-
-  const saveToBrowser = useCallback(async () => {
-    if (!result) return;
-    try {
-      await saveModel(
-        {
-          name: result.name,
-          description: `Trained in the browser on ${styles.map((style) => style.name).join(', ') || 'no styles'}.`,
-          bytes: result.bytes,
-          trainedAt: config?.cropSize,
-          controls: result.controls.map((control) => control.label),
-        },
-        result.buffer,
-      );
-      onSavedModelsChanged();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    }
-  }, [result, styles, config, onSavedModelsChanged]);
+  }, [module, config, styles, frames, modelName, onUseModel, onBusyChange, saveToBrowser]);
 
   if (error && !module) {
     return <p className="error">{error}</p>;
@@ -349,10 +372,12 @@ export function TrainPanel({ getSource, onUseModel, onSavedModelsChanged, onBusy
         <>
           <p className="note">
             Done — {result.steps} steps in {formatDuration(result.elapsedMs)}, {(result.bytes / 1024).toFixed(0)} kB.
-            It is already running on the canvas.
+            It is running on the canvas{savedId ? ' and saved to this browser, so a reload will not lose it' : ''}.
           </p>
           <ButtonRow>
-            <button className="button" onClick={() => void saveToBrowser()}>Save to this browser</button>
+            {savedId ? null : (
+              <button className="button" onClick={() => void saveToBrowser(result)}>Save to this browser</button>
+            )}
             <button
               className="button"
               onClick={() => download(new Blob([result.buffer]), `${result.name || timestampedName('dreamnet', 'dnw')}.dnw`)}
