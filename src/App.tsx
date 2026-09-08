@@ -869,6 +869,10 @@ export default function App() {
                   return (
                     <div className="mixer-channel" key={band.name} title={`${band.label} · ${band.low}–${band.high} Hz`}>
                       <div className="mixer-strip">
+                        {/* Behind the fader, so the level is readable from the corner of an eye
+                            while a hand is on the control, and beside it as a solid column for
+                            when the exact value matters. */}
+                        <div className="mixer-backdrop" style={{ height: `${Math.round(level * 100)}%` }} />
                         <div className="mixer-meter">
                           <span style={{ height: `${Math.round(level * 100)}%` }} />
                         </div>
@@ -887,7 +891,8 @@ export default function App() {
                           }}
                         />
                       </div>
-                      <span className="mixer-value">{gain.toFixed(2)}</span>
+                      <span className="mixer-readout">{level.toFixed(2)}</span>
+                      <span className="mixer-value">{gain.toFixed(2)}×</span>
                       <span className="mixer-label">{band.short}</span>
                     </div>
                   );

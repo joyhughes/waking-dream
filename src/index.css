@@ -582,13 +582,37 @@ select {
 }
 
 .mixer-strip {
+  position: relative;
   display: flex;
   gap: 3px;
   height: 96px;
   align-items: stretch;
+  padding: 0 2px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+}
+
+/*
+ * The level again, as a wash behind the whole channel.
+ *
+ * A nine-pixel column is precise and easy to miss while a hand is on the fader, which is exactly
+ * when the level matters most. Filling the channel behind the control puts it where peripheral
+ * vision will catch it, at an opacity low enough that the fader stays the thing in focus.
+ */
+.mixer-backdrop {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(0deg, rgba(124, 196, 255, 0.34), rgba(124, 196, 255, 0.1));
+  transition: height 0.15s linear;
+  pointer-events: none;
 }
 
 .mixer-meter {
+  position: relative;
+  z-index: 1;
   width: 9px;
   display: flex;
   align-items: flex-end;
@@ -610,6 +634,8 @@ select {
 }
 
 .mixer-fader {
+  position: relative;
+  z-index: 1;
   /* `writing-mode` is the standard way to stand a range input up; the -webkit rule is the older
      Safari spelling, ignored by browsers that honour the first. */
   writing-mode: vertical-lr;
@@ -622,11 +648,19 @@ select {
   accent-color: var(--accent);
 }
 
+/** The measured level, so a channel can be read exactly rather than estimated off a bar. */
+.mixer-readout {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+
 .mixer-value {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 9.5px;
   font-variant-numeric: tabular-nums;
-  color: var(--text);
+  color: var(--dim);
 }
 
 .mixer-label {
@@ -644,6 +678,8 @@ select {
   }
 
   .mixer-fader {
+  position: relative;
+  z-index: 1;
     width: 26px;
   }
 }
