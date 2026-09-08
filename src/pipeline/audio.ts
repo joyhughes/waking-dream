@@ -15,17 +15,19 @@
 export interface FrequencyBand {
   name: string;
   label: string;
+  /** Two or three characters, for a mixer channel that is forty pixels wide. */
+  short: string;
   /** Hz. */
   low: number;
   high: number;
 }
 
 export const FREQUENCY_BANDS: FrequencyBand[] = [
-  { name: 'bass', label: 'Bass', low: 20, high: 160 },
-  { name: 'low-mid', label: 'Low mid', low: 160, high: 500 },
-  { name: 'vocal', label: 'Vocal range', low: 500, high: 2000 },
-  { name: 'presence', label: 'Presence', low: 2000, high: 6000 },
-  { name: 'air', label: 'Air', low: 6000, high: 16000 },
+  { name: 'bass', label: 'Bass', short: 'Bass', low: 20, high: 160 },
+  { name: 'low-mid', label: 'Low mid', short: 'Low', low: 160, high: 500 },
+  { name: 'vocal', label: 'Vocal range', short: 'Voice', low: 500, high: 2000 },
+  { name: 'presence', label: 'Presence', short: 'Pres', low: 2000, high: 6000 },
+  { name: 'air', label: 'Air', short: 'Air', low: 6000, high: 16000 },
 ];
 
 /**

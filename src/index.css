@@ -552,50 +552,100 @@ select {
   color: var(--text);
 }
 
-/* Band meters ---------------------------------------------------------------------------- */
+/* Band mixer -------------------------------------------------------------------------------- */
 
-.meters {
+/*
+ * A channel strip per band: level on the left, gain fader on the right, both vertical.
+ *
+ * The gains were a stack of five horizontal sliders under a separate row of meters, which meant
+ * reading a level in one place and reaching for its gain in another. Side by side in one column,
+ * the thing you are adjusting and the thing you are watching are the same object — which is why
+ * every mixing desk ever built is laid out this way.
+ */
+.mixer {
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
-  gap: 6px;
-  align-items: end;
-  height: 64px;
+  gap: 5px;
+  padding: 7px 6px 5px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--panel-edge);
 }
 
-.meter {
+.mixer-channel {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 3px;
-  height: 100%;
   min-width: 0;
 }
 
-.meter-track {
-  flex: 1;
+.mixer-strip {
+  display: flex;
+  gap: 3px;
+  height: 96px;
+  align-items: stretch;
+}
+
+.mixer-meter {
+  width: 9px;
   display: flex;
   align-items: flex-end;
-  border-radius: 3px;
-  background: #0f1116;
+  border-radius: 2px;
+  /* Lighter than the panel rather than darker: an unlit meter has to read as an empty track, and
+     against a dark panel a darker well simply disappears. */
+  background: #242833;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
   overflow: hidden;
 }
 
-.meter-track span {
+.mixer-meter span {
   display: block;
   width: 100%;
-  background: linear-gradient(0deg, #2f6ea3, #7cc4ff);
-  /* Only smooths the 200ms gap between status updates — the analyser's own attack and release do
-     the actual shaping, and a longer transition here would fight them. */
-  transition: height 0.18s linear;
+  background: linear-gradient(0deg, #3f9ae0, #a8dcff);
+  /* Only bridges the 200ms between status updates. The analyser's attack and release do the real
+     shaping, and a longer transition here would fight them. */
+  transition: height 0.15s linear;
 }
 
-.meter-label {
-  font-size: 9px;
+.mixer-fader {
+  /* `writing-mode` is the standard way to stand a range input up; the -webkit rule is the older
+     Safari spelling, ignored by browsers that honour the first. */
+  writing-mode: vertical-lr;
+  direction: rtl;
+  -webkit-appearance: slider-vertical;
+  width: 18px;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.mixer-value {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.mixer-label {
+  font-size: 9.5px;
   color: var(--dim);
-  text-align: center;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (pointer: coarse) {
+  .mixer-strip {
+    height: 120px;
+  }
+
+  .mixer-fader {
+    width: 26px;
+  }
 }
 
 /* Sound routing under a slider ------------------------------------------------------------ */

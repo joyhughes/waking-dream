@@ -862,15 +862,36 @@ export default function App() {
 
           {config.audio.enabled ? (
             <>
-              <div className="meters">
-                {FREQUENCY_BANDS.map((band, index) => (
-                  <div className="meter" key={band.name} title={`${band.low}–${band.high} Hz`}>
-                    <div className="meter-track">
-                      <span style={{ height: `${Math.round((status?.audioLevels[index] ?? 0) * 100)}%` }} />
+              <div className="mixer">
+                {FREQUENCY_BANDS.map((band, index) => {
+                  const level = status?.audioLevels[index] ?? 0;
+                  const gain = config.audio.gains[index] ?? 1;
+                  return (
+                    <div className="mixer-channel" key={band.name} title={`${band.label} · ${band.low}–${band.high} Hz`}>
+                      <div className="mixer-strip">
+                        <div className="mixer-meter">
+                          <span style={{ height: `${Math.round(level * 100)}%` }} />
+                        </div>
+                        <input
+                          className="mixer-fader"
+                          type="range"
+                          min={0}
+                          max={4}
+                          step={0.05}
+                          value={gain}
+                          aria-label={`${band.label} gain`}
+                          onChange={(event) => {
+                            const gains = FREQUENCY_BANDS.map((_, i) => config.audio.gains[i] ?? 1);
+                            gains[index] = Number(event.target.value);
+                            patchConfig({ audio: { ...config.audio, gains } });
+                          }}
+                        />
+                      </div>
+                      <span className="mixer-value">{gain.toFixed(2)}</span>
+                      <span className="mixer-label">{band.short}</span>
                     </div>
-                    <span className="meter-label">{band.label}</span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               <Slider
@@ -911,25 +932,6 @@ export default function App() {
                 onChange={(leaderBonus) => patchConfig({ audio: { ...config.audio, leaderBonus } })}
               />
 
-              <div className="band-gains">
-                <span className="control-label">Band gain</span>
-                {FREQUENCY_BANDS.map((band, index) => (
-                  <Slider
-                    key={band.name}
-                    label={band.label}
-                    value={config.audio.gains[index] ?? 1}
-                    min={0}
-                    max={4}
-                    step={0.05}
-                    onChange={(value) => {
-                      const gains = FREQUENCY_BANDS.map((_, i) => config.audio.gains[i] ?? 1);
-                      gains[index] = value;
-                      patchConfig({ audio: { ...config.audio, gains } });
-                    }}
-                    format={(value) => `${value.toFixed(2)}×`}
-                  />
-                ))}
-              </div>
 
               {modelControls.map((control, index) => (
                 <Choice
