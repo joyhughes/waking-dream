@@ -43,6 +43,37 @@ while it repaints them. A few hundred varied ones is plenty.
 Expect a usable model in well under an hour on an M3, and something you can look at within minutes —
 previews are written to `runs/<name>/previews/` throughout.
 
+## Getting a content set out of Photos
+
+```bash
+python3 sample_photos.py --count 400 --out data/content
+python style.py --images data/content --out runs/mine
+```
+
+A random draw from your own library is a better content set than any stock collection, because it
+already has the right faces, rooms, lighting and framing — the things the model will actually meet
+through a webcam. 300–500 is the comfortable range: with random crops and flips at the default 8000
+iterations, that is each photo seen 65–100 times at different framings. Below about 100 the network
+starts learning image-specific quirks; past 1000 is diminishing returns at this size.
+
+It needs nothing installed. `sips`, which does the HEIC conversion and the downscale, ships with
+macOS. Expect roughly a minute for 400 photos. Nothing in the library is modified.
+
+**Two things to know before you run it.** It reads the library's `originals` directory rather than
+asking the Photos database, so it can see **photos you have deleted or hidden** — deleted items sit
+there until Photos purges them, and hidden ones are not marked in any way the file system can see.
+It also cannot filter by album, favourite, date or keyword.
+
+If either matters — and if a model you might share could be trained on them, the first one does —
+use [osxphotos](https://github.com/RhetTbull/osxphotos), which asks the database instead:
+
+```bash
+brew install python@3.12                       # osxphotos needs 3.10+
+/opt/homebrew/bin/python3.12 -m pip install osxphotos
+osxphotos export data/content --limit 400 --convert-to-jpeg --jpeg-quality 0.9 \
+    --skip-original-if-edited --not-hidden --only-photos --not-screenshot
+```
+
 ## What the loss is asking for
 
 Both terms are measured on VGG-16 features rather than on pixels, because pixels ask for the wrong
