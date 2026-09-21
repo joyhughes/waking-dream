@@ -232,6 +232,17 @@ def main() -> None:
     model.load_state_dict(checkpoint["model"])
     model.eval()
 
+    # A diverged run produces weights that are entirely NaN, and a model file built from them loads,
+    # runs, and draws black — with nothing anywhere to say why. Refusing here is the last place that
+    # can be caught before it becomes a mystery in the browser.
+    broken = [name for name, value in model.state_dict().items() if not torch.isfinite(value).all()]
+    if broken:
+        raise SystemExit(
+            f"{args.checkpoint} contains non-finite weights in {len(broken)} tensors "
+            f"(first: {broken[0]}). That checkpoint is from a run that diverged — it would export "
+            f"cleanly and then render black. Retrain, with a lower --lr if it diverges again."
+        )
+
     name = args.name or args.out.stem
     # Whatever the trainer recorded about where this model came from — the teacher's backbone for a
     # distilled one, the style filenames for a style-transfer one. Carried through so a model file

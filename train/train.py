@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from pathlib import Path
 
@@ -145,6 +146,11 @@ def main() -> None:
             prediction = model(source, controls)
 
             pixel = F.mse_loss(prediction, target)
+            if not math.isfinite(pixel.item()):
+                raise SystemExit(
+                    f"\nepoch {epoch + 1}: the loss went non-finite. Retry with a lower --lr; the "
+                    f"last good checkpoint is untouched."
+                )
             loss = args.pixel_weight * pixel
             running["pixel"] += pixel.item()
 
@@ -179,6 +185,12 @@ def main() -> None:
             f"epoch {epoch + 1}: pixel {means['pixel']:.5f} perceptual {means['perceptual']:.4f} "
             f"warp {means['warp']:.5f} · lr {schedule.get_last_lr()[0]:.2e} · {elapsed:.1f} min"
         )
+
+        if not all(torch.isfinite(value).all() for value in model.state_dict().values()):
+            raise SystemExit(
+                f"\nepoch {epoch + 1}: the weights went non-finite, so this run has diverged. The "
+                f"previous checkpoint has been left alone. Retry with a lower --lr."
+            )
 
         torch.save(
             {"model": model.state_dict(), "width": args.width, "blocks": args.blocks,

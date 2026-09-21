@@ -42,6 +42,20 @@ STILL_SUFFIXES = {".jpg", ".jpeg", ".heic", ".heif"}
 MIN_PIXELS = 600
 MAX_ASPECT = 2.4
 
+# Minimum JPEG bytes per megapixel, as a stand-in for "has any detail in it".
+#
+# A frame with nothing in it — a lens cap, a black exposure, a white wall filling the view — is not
+# merely a wasted training example, it is an actively destructive one. Instance normalization
+# divides by the square root of a crop's variance, so a flat crop is amplified by hundreds and
+# arrives at the optimizer as a gradient around a thousand times the size of a normal one. Two such
+# frames in four hundred were enough to take a whole run to NaN.
+#
+# JPEG size is the cheap way to spot them: a flat image compresses to nothing. Measured against a
+# real library, flat frames came in at 20k bytes per megapixel where the fifth percentile of ordinary
+# photographs was 125k — a gap wide enough that no threshold in between is a close call, and one that
+# needs no image decoder, which is what keeps this script dependency-free.
+MIN_BYTES_PER_MEGAPIXEL = 40_000
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sample random photos into a training content set.")
@@ -53,6 +67,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--size", type=int, default=1024,
                         help="Longest side of the copies. Training crops at 256, so this leaves room to crop.")
     parser.add_argument("--seed", type=int, default=0, help="Change it to draw a different sample.")
+    parser.add_argument("--min-detail", type=float, default=MIN_BYTES_PER_MEGAPIXEL,
+                        help="Reject frames compressing below this many JPEG bytes per megapixel — "
+                             "blank walls and black exposures, which destabilise training.")
     parser.add_argument("--dry-run", action="store_true", help="Report what would be taken, copy nothing.")
     parser.add_argument("--keep-existing", action="store_true",
                         help="Add to whatever is already in --out instead of starting clean.")
@@ -126,7 +143,8 @@ def main() -> None:
         shutil.rmtree(args.out)
     args.out.mkdir(parents=True, exist_ok=True)
 
-    taken = skipped = failed = 0
+    taken = skipped = failed = flat = 0
+    megapixels = (args.size * args.size) / 1_000_000
     # Walked lazily rather than filtered up front: reading dimensions costs a subprocess per file,
     # and checking sixty thousand of them to choose four hundred would take far longer than the
     # training run it is preparing for.
@@ -136,7 +154,14 @@ def main() -> None:
         if not usable(path):
             skipped += 1
             continue
-        if convert(path, args.out / f"{taken:05d}.jpg", args.size):
+        destination = args.out / f"{taken:05d}.jpg"
+        if convert(path, destination, args.size):
+            # Judged after conversion, because the size that matters is the size at the resolution
+            # this will actually be trained on, not whatever the original happened to be.
+            if destination.stat().st_size < args.min_detail * megapixels:
+                destination.unlink()
+                flat += 1
+                continue
             taken += 1
             if taken % 50 == 0:
                 print(f"  {taken}/{args.count}")
@@ -145,6 +170,8 @@ def main() -> None:
 
     print(f"\nWrote {taken} photos to {args.out}")
     print(f"  skipped {skipped} (too small, or too far from square)")
+    if flat:
+        print(f"  dropped {flat} with almost no detail (blank or near-blank frames)")
     if failed:
         print(f"  {failed} could not be converted")
     if taken < args.count:

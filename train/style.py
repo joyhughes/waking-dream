@@ -26,8 +26,11 @@ per frame in the browser.
 from __future__ import annotations
 
 import argparse
+import copy
+import math
 import random
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -48,6 +51,12 @@ from perceptual import (
     random_warp_grid,
     total_variation,
 )
+
+
+# Below this a crop has effectively no content. Ordinary photographs sit two orders of magnitude
+# above it, so this rejects blank frames without touching anything legitimately low-contrast.
+MIN_CROP_STD = 0.01
+MAX_CROP_ATTEMPTS = 8
 
 
 class ContentDataset(Dataset):
@@ -72,6 +81,18 @@ class ContentDataset(Dataset):
     def __getitem__(self, item: int) -> torch.Tensor:
         # Seeded from the item index so a worker pool still produces a deterministic run.
         rng = random.Random(self.seed * 1_000_003 + item)
+
+        # Retried rather than accepted, because a crop with no variance in it is not a weak training
+        # example but a destructive one: instance normalization divides by the square root of its
+        # variance, and a flat crop arrives as a gradient three orders of magnitude larger than a
+        # normal one. A handful of blank frames in a few hundred is enough to end a run in NaN.
+        for attempt in range(MAX_CROP_ATTEMPTS):
+            crop = self._crop(rng)
+            if crop.std() >= MIN_CROP_STD:
+                return crop
+        return crop
+
+    def _crop(self, rng: random.Random) -> torch.Tensor:
         image = load_image(self.paths[rng.randrange(len(self.paths))])
 
         _, height, width = image.shape
@@ -144,6 +165,22 @@ def mixture(controls: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     mass = controls.sum(dim=1, keepdim=True)
     direction = controls / mass.clamp(min=1e-6)
     return direction, mass.clamp(max=1.0)
+
+
+# How often a known-good copy of the weights is kept, and how many divergences to survive before
+# giving up. Six halvings takes the learning rate to a sixty-fourth of where it started, which is
+# well past the point where the problem is something other than the step size.
+SNAPSHOT_EVERY = 100
+MAX_ROLLBACKS = 6
+
+
+def finite_state(model: DreamNet) -> dict:
+    """A CPU copy of the weights, for rolling back to."""
+    return {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+
+
+def state_is_finite(model: DreamNet) -> bool:
+    return all(torch.isfinite(value).all() for value in model.state_dict().values())
 
 
 def resolve_styles(entries: list[Path]) -> list[Path]:
@@ -227,6 +264,14 @@ def main() -> None:
             style_grams[name] = torch.cat([gram_matrix(features[name]) for features in per_style], dim=0)
 
     print(f"{style_count} style(s): {', '.join(style_names)}")
+    for path in style_paths:
+        source = Image.open(path)
+        if min(source.size) < args.style_size:
+            print(
+                f"  note: {path.name} is {source.size[0]}x{source.size[1]}, smaller than "
+                f"--style-size {args.style_size}. It will be upscaled, so its texture will come out "
+                f"softer than the others."
+            )
     for name in DEFAULT_STYLE_LAYERS:
         print(f"  gram {name}: {tuple(style_grams[name].shape)}")
 
@@ -252,6 +297,16 @@ def main() -> None:
     running = {"content": 0.0, "style": 0.0, "tv": 0.0, "warp": 0.0}
     seen = 0
     began = time.time()
+
+    # A diverged run used to destroy its own result: the checkpoint was overwritten every preview
+    # interval whether or not the weights were still numbers, so by the time the black previews were
+    # noticed the good weights from before the blow-up were long gone. Now a copy of the last finite
+    # state is kept, nothing non-finite is ever written to disk, and a divergence rolls back and
+    # tries again at half the learning rate instead of quietly ruining the next hour.
+    last_good = finite_state(model)
+    last_good_step = 0
+    rollbacks = 0
+    lr_scale = 1.0
 
     for step, content in enumerate(tqdm(loader, total=args.iterations, desc="training")):
         if step >= args.iterations:
@@ -296,12 +351,44 @@ def main() -> None:
             loss = loss + args.warp_weight * warp_loss
             running["warp"] += warp_loss.item()
 
+        # Checked before the backward pass, because gradient clipping cannot rescue a loss that is
+        # already NaN — clipping a NaN leaves a NaN, and one step later every weight is one too.
+        loss_value = loss.item()
+        if not math.isfinite(loss_value):
+            rollbacks += 1
+            if rollbacks > MAX_ROLLBACKS:
+                raise SystemExit(
+                    f"\nDiverged {rollbacks} times, most recently at step {step}. The learning rate is "
+                    f"now {lr_scale:.4f} of what it started at, so the step size is probably not the "
+                    f"problem — try a lower --style-weight, or check the style images for anything "
+                    f"with extreme contrast."
+                )
+            print(
+                f"\nstep {step}: loss went non-finite. Rolling back to step {last_good_step} and "
+                f"halving the learning rate (now {lr_scale / 2:.4f}x)."
+            )
+            model.load_state_dict(last_good)
+            # Adam's moments are poisoned too, and restoring the weights without clearing them walks
+            # straight back into the same blow-up on the next step.
+            optimizer.state = defaultdict(dict)
+            lr_scale *= 0.5
+            continue
+
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         schedule.step()
+        # The schedule sets the rate from its own step count each time, so the scale is reapplied
+        # after it rather than folded into it.
+        if lr_scale != 1.0:
+            for group in optimizer.param_groups:
+                group["lr"] *= lr_scale
         seen += 1
+
+        if step % SNAPSHOT_EVERY == 0 and state_is_finite(model):
+            last_good = finite_state(model)
+            last_good_step = step
 
         if (step + 1) % args.preview_every == 0 or step + 1 == args.iterations:
             means = {key: value / max(1, seen) for key, value in running.items()}
@@ -314,6 +401,11 @@ def main() -> None:
             seen = 0
 
             write_previews(model, preview_content, style_names, device, args.out / "previews" / f"step{step + 1:06d}")
+
+            if not state_is_finite(model):
+                print("  weights are not finite; keeping the previous checkpoint rather than overwriting it.")
+                continue
+
             torch.save(
                 {
                     "model": model.state_dict(),
