@@ -16,6 +16,23 @@
       "params": 1163332
     },
     {
+      "file": "four.dnw",
+      "name": "four",
+      "description": "Real-time style transfer: Eyeballs, faces, skulls, snakes.",
+      "bytes": 5198668,
+      "trainedAt": 256,
+      "kind": "style",
+      "controls": [
+        "Style: Eyeballs",
+        "Style: faces",
+        "Style: skulls",
+        "Style: snakes"
+      ],
+      "width": 24,
+      "blocks": 6,
+      "params": 1297236
+    },
+    {
       "file": "pandas.dnw",
       "name": "pandas",
       "description": "Pandas, quick pass — small network at 128px, 600 iterations.",

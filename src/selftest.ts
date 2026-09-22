@@ -542,7 +542,11 @@ async function checkExportedReference(
 ): Promise<CheckResult | null> {
   let reference: { model: string; width: number; height: number; controls: number[]; input: number[]; output: number[] };
   try {
-    const response = await fetch('/models/verify.json');
+    // Through BASE_URL, not an absolute path. A deployed build — and the dev server that mirrors
+    // it — serves everything under /waking-dream/, so an absolute fetch here quietly 404s and the
+    // whole check reports itself as "no reference exported" instead of running. It had been
+    // skipping silently ever since the base path was set.
+    const response = await fetch(`${import.meta.env.BASE_URL}models/verify.json`);
     if (!response.ok) return null;
     reference = await response.json();
   } catch {
@@ -551,7 +555,7 @@ async function checkExportedReference(
 
   const name = `exported model "${reference.model}" vs PyTorch`;
   try {
-    const model = await DreamNet.load(ctx, ops, `/models/${reference.model}`);
+    const model = await DreamNet.load(ctx, ops, `${import.meta.env.BASE_URL}models/${reference.model}`);
     model.setControls(reference.controls);
 
     const source = ops.pool.acquire({ width: reference.width, height: reference.height, channels: 3 });
