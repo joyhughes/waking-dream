@@ -426,7 +426,8 @@ def main() -> None:
                 )
             print(
                 f"\nstep {step}: loss went non-finite. Rolling back to step {last_good_step} and "
-                f"halving the learning rate (now {lr_scale / 2:.4f}x)."
+                f"halving the learning rate (now {lr_scale / 2:.4f}x).",
+                flush=True,
             )
             model.load_state_dict(last_good)
             # Adam's moments are poisoned too, and restoring the weights without clearing them walks
@@ -454,9 +455,13 @@ def main() -> None:
         if (step + 1) % args.preview_every == 0 or step + 1 == args.iterations:
             means = {key: value / max(1, seen) for key, value in running.items()}
             elapsed = (time.time() - began) / 60
+            # Flushed explicitly: Python block-buffers stdout when it is redirected to a file, so a
+            # long background run's progress sits in a buffer for hours while tqdm's stderr scrolls
+            # past. Watching a run's losses is the whole reason for printing them.
             print(
                 f"\nstep {step + 1}: content {means['content']:.4f} style {means['style']:.4f} "
-                f"tv {means['tv']:.5f} warp {means['warp']:.5f} · {elapsed:.1f} min"
+                f"tv {means['tv']:.5f} warp {means['warp']:.5f} · {elapsed:.1f} min",
+                flush=True,
             )
             running = {key: 0.0 for key in running}
             seen = 0
