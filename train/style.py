@@ -212,6 +212,57 @@ def resolve_styles(entries: list[Path]) -> list[Path]:
     return unique
 
 
+@torch.enable_grad()
+def balance_style_weight(model, vgg, dataset, style_grams, args, device) -> float:
+    """Chooses a style weight by measuring how hard each loss actually pulls.
+
+    A fixed default cannot work here, and the failure is silent when it is wrong. These two losses
+    live on completely different scales — the content term is a mean squared error on VGG features,
+    the style term a mean squared error on normalized Gram matrices — and the ratio between them
+    depends on the feature network, the style images, the model width and the crop size. A run with
+    the weight set five hundred times too low trains perfectly happily, converges, reports falling
+    losses, and produces a network that has learned the identity function, which is only visible by
+    looking at the previews.
+
+    So it is measured instead of guessed: one batch, one backward pass per term, and the weight that
+    puts the style's gradient at `--style-ratio` times the content's. That transfers across feature
+    networks and model sizes, which a number never could.
+    """
+    content = torch.stack([dataset[i] for i in range(args.batch)]).to(device)
+    controls = sample_controls(args.batch, len(style_grams[DEFAULT_STYLE_LAYERS[0]]), random.Random(0), device)
+    direction, mass = mixture(controls)
+
+    def gradient_norm(term: torch.Tensor) -> float:
+        model.zero_grad(set_to_none=True)
+        term.backward(retain_graph=True)
+        total = sum(float(p.grad.detach().norm()) ** 2 for p in model.parameters() if p.grad is not None)
+        return total ** 0.5
+
+    prediction = model(content, controls)
+    features = vgg(torch.cat([prediction, content], dim=0))
+
+    predicted_content, target_content = features[args.content_layer].chunk(2, dim=0)
+    content_term = F.mse_loss(predicted_content, target_content.detach())
+
+    style_term = prediction.new_zeros(())
+    for name in DEFAULT_STYLE_LAYERS:
+        predicted_gram = gram_matrix(features[name].chunk(2, dim=0)[0])
+        target_gram = torch.einsum("bs,scd->bcd", direction, style_grams[name])
+        style_term = style_term + ((predicted_gram - target_gram).pow(2).mean(dim=(1, 2)) * mass.squeeze(1)).mean()
+
+    content_gradient = gradient_norm(content_term)
+    style_gradient = gradient_norm(style_term)
+    model.zero_grad(set_to_none=True)
+
+    if style_gradient <= 0:
+        raise SystemExit("The style loss has no gradient — check that the style images are not blank.")
+
+    weight = args.style_ratio * content_gradient / style_gradient
+    print(f"  content gradient {content_gradient:.3e}, style gradient {style_gradient:.3e}")
+    print(f"  style weight {weight:.0f} for a {args.style_ratio:g}:1 pull (override with --style-weight)")
+    return weight
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a real-time style transfer DreamNet.")
     parser.add_argument("--styles", type=Path, nargs="+", default=[Path("styles")],
@@ -228,8 +279,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--blocks", type=int, default=5)
     parser.add_argument("--film-hidden", type=int, default=32)
     parser.add_argument("--content-weight", type=float, default=1.0)
-    parser.add_argument("--style-weight", type=float, default=12.0,
-                        help="The main dial. Raise it if the output still looks like the photo; lower it if the photo has vanished into wallpaper.")
+    parser.add_argument("--style-ratio", type=float, default=3.0,
+                        help="How hard the style pulls relative to the content, measured as a ratio of "
+                             "gradient magnitudes at the start of training. The main dial: raise it if "
+                             "the output still looks like the photo, lower it if the photo has vanished.")
+    parser.add_argument("--style-weight", type=float, default=None,
+                        help="Set the style weight directly instead of deriving it from --style-ratio. "
+                             "The useful value depends entirely on the feature network and the style "
+                             "images, so there is no sensible fixed default — hence the ratio.")
     parser.add_argument("--tv-weight", type=float, default=2e-3)
     parser.add_argument("--warp-weight", type=float, default=0.3,
                         help="Temporal stability. Costs an extra forward pass per step; set to 0 for stills only.")
@@ -290,6 +347,10 @@ def main() -> None:
     )
 
     args.out.mkdir(parents=True, exist_ok=True)
+    style_weight = args.style_weight
+    if style_weight is None:
+        style_weight = balance_style_weight(model, vgg, dataset, style_grams, args, device)
+
     print(f"{model.parameter_count() / 1000:.0f}k parameters, {args.iterations} iterations on {device}.")
 
     preview_content = torch.stack([dataset[i] for i in range(min(2, len(dataset)))]).to(device)
@@ -336,7 +397,7 @@ def main() -> None:
 
         tv_loss = total_variation(prediction)
 
-        loss = args.content_weight * content_loss + args.style_weight * style_loss + args.tv_weight * tv_loss
+        loss = args.content_weight * content_loss + style_weight * style_loss + args.tv_weight * tv_loss
         running["content"] += content_loss.item()
         running["style"] += style_loss.item()
         running["tv"] += tv_loss.item()
@@ -416,7 +477,7 @@ def main() -> None:
                         "kind": "style",
                         "styles": [str(path) for path in style_paths],
                         "styleSize": args.style_size,
-                        "styleWeight": args.style_weight,
+                        "styleWeight": style_weight,
                         "contentWeight": args.content_weight,
                     },
                     "trained_at": args.size,
