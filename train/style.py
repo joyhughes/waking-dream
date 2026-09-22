@@ -323,7 +323,9 @@ def main() -> None:
     print(f"{style_count} style(s): {', '.join(style_names)}")
     for path in style_paths:
         source = Image.open(path)
-        if min(source.size) < args.style_size:
+        # A margin, so a rounding pixel does not raise an alarm about a resize of a third of a
+        # percent. What this is meant to catch is a thumbnail standing in for the real image.
+        if min(source.size) < args.style_size * 0.9:
             print(
                 f"  note: {path.name} is {source.size[0]}x{source.size[1]}, smaller than "
                 f"--style-size {args.style_size}. It will be upscaled, so its texture will come out "
