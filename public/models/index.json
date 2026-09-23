@@ -16,6 +16,20 @@
       "params": 1163332
     },
     {
+      "file": "eyeballs.dnw",
+      "name": "eyeballs",
+      "description": "Real-time style transfer: Eyeballs.",
+      "bytes": 4840672,
+      "trainedAt": 256,
+      "kind": "style",
+      "controls": [
+        "Style: Eyeballs"
+      ],
+      "width": 24,
+      "blocks": 6,
+      "params": 1207892
+    },
+    {
       "file": "four.dnw",
       "name": "four",
       "description": "Real-time style transfer: Eyeballs, faces, skulls, snakes.",
