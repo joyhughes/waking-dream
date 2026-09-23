@@ -73,6 +73,20 @@
       "width": 24,
       "blocks": 6,
       "params": 1141028
+    },
+    {
+      "file": "smiles.dnw",
+      "name": "smiles",
+      "description": "Real-time style transfer: smiles.",
+      "bytes": 4840664,
+      "trainedAt": 256,
+      "kind": "style",
+      "controls": [
+        "Style: smiles"
+      ],
+      "width": 24,
+      "blocks": 6,
+      "params": 1207892
     }
   ]
 }
