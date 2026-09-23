@@ -141,7 +141,14 @@ def sample_controls(batch: int, styles: int, rng: random.Random, device: torch.d
     controls = torch.zeros(batch, styles, device=device)
     for row in range(batch):
         draw = rng.random()
-        if draw < 0.5 or styles == 1:
+        if styles == 1:
+            # A single style still has a slider, and it means strength. Training it only at 1.0 --
+            # which is what a one-hot draw amounts to when there is one column -- leaves every other
+            # position on that slider undefined, including the zero that `mixture` goes to the
+            # trouble of making mean "off". Full strength keeps a large share of the samples because
+            # it is where the slider spends most of its time.
+            controls[row, 0] = 1.0 if draw < 0.4 else rng.random()
+        elif draw < 0.5:
             controls[row, rng.randrange(styles)] = 1.0
         elif draw < 0.7:
             first, second = rng.sample(range(styles), 2)

@@ -152,7 +152,12 @@ function sampleControls(batch: number, styles: number): tf.Tensor2D {
   for (let row = 0; row < batch; row++) {
     const values = new Array<number>(styles).fill(0);
     const draw = Math.random();
-    if (draw < 0.5 || styles === 1) {
+    if (styles === 1) {
+      // One style still has a slider and it means strength. A one-hot draw on a single column is
+      // always 1.0, which would leave the rest of that slider — including the zero that the mass
+      // split exists to make meaningful — never trained at all.
+      values[0] = draw < 0.4 ? 1 : Math.random();
+    } else if (draw < 0.5) {
       values[Math.floor(Math.random() * styles)] = 1;
     } else if (draw < 0.7) {
       const first = Math.floor(Math.random() * styles);
