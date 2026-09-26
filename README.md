@@ -75,7 +75,8 @@ Pick **Camera**, **Video…**, **Image…**, or **Test pattern** and it starts. 
 for shallow mode.
 
 Models in `public/models/` are listed in `index.json`, which the app reads at startup — it lists them
-all and loads the first automatically, so a deployed build opens already running a real model rather
+all and loads `eyeballs` automatically (the `DEFAULT_MODEL` in `src/App.tsx`; a slow or
+data-saving connection loads the cheapest instead), so a deployed build opens already running a real model rather
 than asking whoever opened it to train one. `train/export.py` maintains that manifest as part of
 every export, and the models are tracked in git, so a model is live on the next reload and ships
 with `pnpm build` with no further step.

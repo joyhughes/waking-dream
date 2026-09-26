@@ -34,6 +34,11 @@ const SIZE_PRESETS = [128, 192, 256, 384, 512, 768];
  *  times a second to move a decimal point would cost more than the pipeline being measured. */
 const STATUS_INTERVAL_MS = 200;
 
+/** The shipped model the app opens with. Named here rather than by position in
+ *  `index.json`, because both writers of that manifest sort it alphabetically. Falls back to the
+ *  first listing if this one is not deployed. */
+const DEFAULT_MODEL = 'eyeballs';
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef<Engine | null>(null);
@@ -94,13 +99,12 @@ export default function App() {
     void fetchModelListings().then((found) => {
       setListings(found);
       // A deployed build should open with a trained model already running, not the fallback and a
-      // menu. On a phone that means the cheapest one: a 300 kB download rather than 4 MB, possibly
-      // over cellular, and a network whose residual stack is a fraction of the arithmetic. Neither
-      // is worth trading for a better-looking model nobody has asked for yet.
+      // menu. On a slow or data-saving connection that means the cheapest one, a 300 kB download
+      // rather than 4 MB; everywhere else, phones included, it is DEFAULT_MODEL.
       if (found.length === 0) return;
       const pick = getDeviceLimits().preferCheapestModel
         ? [...found].sort((a, b) => (a.params ?? a.bytes) - (b.params ?? b.bytes))[0]
-        : found[0];
+        : (found.find((listing) => listing.name === DEFAULT_MODEL) ?? found[0]);
       void loadListing(pick);
     });
 
