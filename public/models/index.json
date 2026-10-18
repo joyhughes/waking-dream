@@ -87,6 +87,20 @@
       "width": 24,
       "blocks": 6,
       "params": 1207892
+    },
+    {
+      "file": "sunflowers.dnw",
+      "name": "sunflowers",
+      "description": "Real-time style transfer: sunflowers.",
+      "bytes": 4840680,
+      "trainedAt": 256,
+      "kind": "style",
+      "controls": [
+        "Style: sunflowers"
+      ],
+      "width": 24,
+      "blocks": 6,
+      "params": 1207892
     }
   ]
 }
