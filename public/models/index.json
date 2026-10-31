@@ -1,6 +1,20 @@
 {
   "models": [
     {
+      "file": "candy-skulls.dnw",
+      "name": "candy-skulls",
+      "description": "Real-time style transfer: candy-skulls.",
+      "bytes": 4840688,
+      "trainedAt": 256,
+      "kind": "style",
+      "controls": [
+        "Style: candy-skulls"
+      ],
+      "width": 24,
+      "blocks": 6,
+      "params": 1207892
+    },
+    {
       "file": "dots.dnw",
       "name": "dots",
       "description": "Pandas and dot-painting in one network — a slider each, and they blend.",
