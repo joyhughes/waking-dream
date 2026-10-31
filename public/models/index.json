@@ -75,6 +75,20 @@
       "params": 1297236
     },
     {
+      "file": "iguanas.dnw",
+      "name": "iguanas",
+      "description": "Real-time style transfer: iguanas.",
+      "bytes": 4840668,
+      "trainedAt": 256,
+      "kind": "style",
+      "controls": [
+        "Style: iguanas"
+      ],
+      "width": 24,
+      "blocks": 6,
+      "params": 1207892
+    },
+    {
       "file": "pandas.dnw",
       "name": "pandas",
       "description": "Pandas, quick pass — small network at 128px, 600 iterations.",
