@@ -430,9 +430,9 @@ layout(location = 0) out vec4 o0;
 void main() {
   vec2 uv = gl_FragCoord.xy * uOutSizeInv;
   uv.x = mix(uv.x, 1.0 - uv.x, uMirror);
-  // Textures from a video element arrive with their first row at the top, which is the opposite of
-  // the framebuffer's origin, so the vertical flip happens here rather than by re-uploading flipped.
-  uv.y = 1.0 - uv.y;
+  // No vertical flip here. Textures from a video element arrive with their first row at the top, so
+  // tensor row 0 is the top of the picture, which is the layout the networks were trained on. Flip
+  // on the way in and a network sees the world upside down, and paints its motifs that way.
   vec2 sourceUv = uv * uScale + uOffset;
   o0 = vec4(texture(uSource, clamp(sourceUv, vec2(0.0), vec2(1.0))).rgb, 0.0);
 }
@@ -459,10 +459,10 @@ uniform float uSaturation;
 layout(location = 0) out vec4 oColor;
 
 void main() {
-  // No vertical flip here. The capture pass already flipped the source on the way in, which put the
-  // tensor in the framebuffer's bottom-up orientation -- the same one the default framebuffer uses.
-  // Flipping again would land the picture upside down.
+  // Tensors are top-down and the default framebuffer is bottom-up, so this is the one vertical flip
+  // in the pipeline.
   vec2 uv = gl_FragCoord.xy * uOutSizeInv;
+  uv.y = 1.0 - uv.y;
   vec3 dreamed = texture(uOutput, vec3(uv, 0.0)).rgb;
   vec3 original = texture(uOriginal, vec3(uv, 0.0)).rgb;
   vec3 color = mix(original, dreamed, uMix) * uGain;

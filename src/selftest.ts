@@ -163,6 +163,43 @@ function encodeDnw(header: ModelHeader, gpu: Float32Array, cpu: Float32Array): A
   return buffer;
 }
 
+/**
+ * The tensor comparisons cannot see which way up the pipeline is, because they start and end at
+ * tensors. This one goes from image to canvas: tensor row 0 has to be the top of the picture, as it
+ * was in training, and the top of the picture has to come out at the top of the canvas.
+ */
+function checkOrientation(ctx: ReturnType<typeof createGlContext>, ops: Ops, canvas: HTMLCanvasElement): CheckResult {
+  const name = 'image top is tensor row 0 and canvas top';
+  try {
+    const source = document.createElement('canvas');
+    source.width = 8;
+    source.height = 8;
+    const painter = source.getContext('2d')!;
+    painter.fillStyle = '#ff0000';
+    painter.fillRect(0, 0, 8, 4);
+    painter.fillStyle = '#0000ff';
+    painter.fillRect(0, 4, 8, 4);
+
+    const tensor = ops.pool.acquire({ width: 8, height: 8, channels: 3 });
+    ops.fromSource(source, tensor, { mirror: false });
+    const rowZeroRed = readTensor(ctx, tensor)[0] ?? 0;
+
+    ops.toCanvas(tensor, tensor, canvas.width, canvas.height, { mix: 1, gain: 1, saturation: 1 });
+    const shown = document.createElement('canvas');
+    shown.width = canvas.width;
+    shown.height = canvas.height;
+    const viewer = shown.getContext('2d')!;
+    viewer.drawImage(canvas, 0, 0);
+    const canvasTopRed = viewer.getImageData(0, 0, 1, 1).data[0] ?? 0;
+    ops.pool.release(tensor);
+
+    const passed = rowZeroRed > 0.9 && canvasTopRed > 230;
+    return { name, passed, detail: `tensor row 0 red ${rowZeroRed.toFixed(2)}, canvas top red ${canvasTopRed}` };
+  } catch (error) {
+    return { name, passed: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export async function runSelfTest(): Promise<CheckResult[]> {
   const canvas = document.createElement('canvas');
   canvas.width = 64;
@@ -187,6 +224,7 @@ export async function runSelfTest(): Promise<CheckResult[]> {
 
     results.push(checkCombine(ctx, ops));
     results.push(checkResize(ctx, ops));
+    results.push(checkOrientation(ctx, ops, canvas));
     results.push(checkModel(ctx, ops));
     results.push(checkShallowRuns(ctx, ops));
 

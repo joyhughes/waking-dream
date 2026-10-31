@@ -419,8 +419,9 @@ export class Ops {
     // The matrix maps a destination point back to where it came from, so a zoom greater than one —
     // which should magnify — samples from a *smaller* region, hence the reciprocal.
     const inverseZoom = 1 / Math.max(1e-3, params.zoom);
-    const cos = Math.cos(params.rotate) * inverseZoom;
-    const sin = Math.sin(params.rotate) * inverseZoom;
+    // Tensors are top-down, so rotation and vertical drift are negated to keep their on-screen sense.
+    const cos = Math.cos(-params.rotate) * inverseZoom;
+    const sin = Math.sin(-params.rotate) * inverseZoom;
     const aspect: [number, number] = output.width >= output.height
       ? [output.width / output.height, 1]
       : [1, output.height / output.width];
@@ -433,7 +434,7 @@ export class Ops {
         .tensor('uInput', input)
         .vec2('uOutSizeInv', 1 / output.width, 1 / output.height)
         .vec2('uAspect', aspect[0], aspect[1])
-        .vec2('uTranslate', params.translateX, params.translateY)
+        .vec2('uTranslate', params.translateX, -params.translateY)
         .float('uFade', params.fade)
         .int('uGroupBase', 0);
       const location = gl.getUniformLocation(program.handle, 'uMatrix');
