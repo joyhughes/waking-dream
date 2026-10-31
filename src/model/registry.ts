@@ -63,6 +63,20 @@ export function modelUrl(file: string): string {
   return `${import.meta.env.BASE_URL}${MODELS_BASE}/${file}`;
 }
 
+/** The filter a share link asks for, which is whatever follows the base path, if anything. */
+export function filterFromPath(): string | null {
+  const { pathname } = window.location;
+  const base = import.meta.env.BASE_URL;
+  const rest = pathname.startsWith(base) ? pathname.slice(base.length) : '';
+  const name = rest.replace(/\/+$/, '');
+  return name ? decodeURIComponent(name) : null;
+}
+
+/** The shareable address of a filter. Null gives the app's root. */
+export function filterPath(name: string | null): string {
+  return `${import.meta.env.BASE_URL}${name ? `${encodeURIComponent(name)}/` : ''}`;
+}
+
 export function formatSize(bytes: number): string {
   return bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${(bytes / 1024).toFixed(0)} kB`;
 }

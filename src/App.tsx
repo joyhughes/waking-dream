@@ -14,7 +14,7 @@ import { AudioAnalyser, FREQUENCY_BANDS } from './pipeline/audio';
 import { CameraSource, ImageSource, VideoFileSource, type CameraFacing, type FrameSource } from './pipeline/sources';
 import { createTestPattern } from './pipeline/testPattern';
 import type { ControlSpec } from './model/format';
-import { costLabel, fetchModelListings, formatSize, modelUrl, type ModelListing } from './model/registry';
+import { costLabel, fetchModelListings, filterFromPath, filterPath, formatSize, modelUrl, type ModelListing } from './model/registry';
 import { deleteSavedModel, listSavedModels, loadSavedModel, type SavedModelMeta } from './model/storage';
 import { TrainPanel } from './ui/TrainPanel';
 import { getDeviceLimits } from './pipeline/deviceLimits';
@@ -38,6 +38,7 @@ const STATUS_INTERVAL_MS = 200;
  *  `index.json`, because both writers of that manifest sort it alphabetically. Falls back to the
  *  first listing if this one is not deployed. */
 const DEFAULT_MODEL = 'eyeballs';
+const SITE_TITLE = 'Waking dream by Joyographic';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -101,11 +102,16 @@ export default function App() {
       // A deployed build should open with a trained model already running, not the fallback and a
       // menu. On a slow or data-saving connection that means the cheapest one, a 300 kB download
       // rather than 4 MB; everywhere else, phones included, it is DEFAULT_MODEL.
+      // A share link outranks both: someone sent that filter on purpose.
       if (found.length === 0) return;
-      const pick = getDeviceLimits().preferCheapestModel
+      const requested = filterFromPath();
+      const shared = found.find((listing) => listing.name.toLowerCase() === requested?.toLowerCase());
+      const pick = shared ?? (getDeviceLimits().preferCheapestModel
         ? [...found].sort((a, b) => (a.params ?? a.bytes) - (b.params ?? b.bytes))[0]
-        : (found.find((listing) => listing.name === DEFAULT_MODEL) ?? found[0]);
-      void loadListing(pick);
+        : (found.find((listing) => listing.name === DEFAULT_MODEL) ?? found[0]));
+      void loadListing(pick).then(() => {
+        if (requested && !shared) setNotice(`There is no filter called "${requested}", so this opened ${pick.name}.`);
+      });
     });
 
     return () => {
@@ -118,6 +124,15 @@ export default function App() {
     // WebGL context.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The address always names the filter on screen, so copying it from the browser shares that filter.
+  // A saved or dropped-in model only exists on this device, so it has no address of its own.
+  useEffect(() => {
+    if (!selectedModel) return;
+    const name = listings.find((listing) => listing.file === selectedModel)?.name ?? null;
+    window.history.replaceState(null, '', filterPath(name) + window.location.search + window.location.hash);
+    document.title = name ? `${name} · ${SITE_TITLE}` : SITE_TITLE;
+  }, [listings, selectedModel]);
 
   const patchConfig = useCallback((patch: Partial<EngineConfig>) => {
     const engine = engineRef.current;
@@ -597,6 +612,21 @@ export default function App() {
                 if (meta) void loadSaved(meta);
               }}
             />
+          ) : null}
+          {listings.some((listing) => listing.file === selectedModel) ? (
+            <ButtonRow>
+              <button
+                className="button small"
+                onClick={() => {
+                  void navigator.clipboard
+                    ?.writeText(window.location.href)
+                    .then(() => setNotice('Link to this filter copied to the clipboard.'))
+                    .catch(() => setNotice('Could not copy the link.'));
+                }}
+              >
+                Copy link to this filter
+              </button>
+            </ButtonRow>
           ) : null}
           {saved.some((meta) => meta.id === selectedModel) ? (
             <ButtonRow>

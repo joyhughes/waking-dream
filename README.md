@@ -81,6 +81,10 @@ than asking whoever opened it to train one. `train/export.py` maintains that man
 every export, and the models are tracked in git, so a model is live on the next reload and ships
 with `pnpm build` with no further step.
 
+Every shipped model has its own link, `https://joyhughes.github.io/waking-dream/<name>`, which opens
+the app on that model. The address bar follows the model list, and **Copy link to this filter** copies
+it. `pnpm build` generates those pages from the manifest, so a new model gets one with no further step.
+
 `/selftest.html` runs the numerical self-test: every GPU op against a CPU reference, a full network
 forward pass against a CPU implementation of the same op list, the TFJS trainer's network against
 the WebGL runtime, and a PNG parameter round trip. `/traintest.html` runs a short real training run
