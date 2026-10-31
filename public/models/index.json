@@ -15,6 +15,20 @@
       "params": 1207892
     },
     {
+      "file": "disco-balls.dnw",
+      "name": "disco-balls",
+      "description": "Real-time style transfer: disco-balls.",
+      "bytes": 4840684,
+      "trainedAt": 256,
+      "kind": "style",
+      "controls": [
+        "Style: disco-balls"
+      ],
+      "width": 24,
+      "blocks": 6,
+      "params": 1207892
+    },
+    {
       "file": "dots.dnw",
       "name": "dots",
       "description": "Pandas and dot-painting in one network — a slider each, and they blend.",
