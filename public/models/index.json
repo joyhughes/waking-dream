@@ -145,6 +145,20 @@
       "params": 1207892
     },
     {
+      "file": "stained-glass.dnw",
+      "name": "stained-glass",
+      "description": "Real-time style transfer: stained-glass.",
+      "bytes": 4840692,
+      "trainedAt": 256,
+      "kind": "style",
+      "controls": [
+        "Style: stained-glass"
+      ],
+      "width": 24,
+      "blocks": 6,
+      "params": 1207892
+    },
+    {
       "file": "sunflowers.dnw",
       "name": "sunflowers",
       "description": "Real-time style transfer: sunflowers.",
