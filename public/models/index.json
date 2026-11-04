@@ -89,6 +89,20 @@
       "params": 1207892
     },
     {
+      "file": "lightning.dnw",
+      "name": "lightning",
+      "description": "Real-time style transfer: lightning.",
+      "bytes": 4840676,
+      "trainedAt": 256,
+      "kind": "style",
+      "controls": [
+        "Style: lightning"
+      ],
+      "width": 24,
+      "blocks": 6,
+      "params": 1207892
+    },
+    {
       "file": "pandas.dnw",
       "name": "pandas",
       "description": "Pandas, quick pass — small network at 128px, 600 iterations.",
